@@ -87,58 +87,7 @@ void __not_in_flash("scanline") scanline_callback(uint32_t v_scanline, uint32_t 
     }
 }
 
-// ============================================================================
-// CPU-PPU Timing (duplicated from emu.c to avoid SDL2 dependency)
-// ============================================================================
-
-static void ppu_vblank_warmup_seq(const Cpu6502 *cpu)
-{
-    static unsigned count = 0;
-    if (!count) {
-        clear_ppu_status_vblank_bit(cpu->cpu_ppu_io);
-        ++count;
-    } else if ((count == 1) && cpu->cycle >= 27383) {
-        set_ppu_status_vblank_bit(cpu->cpu_ppu_io);
-        ++count;
-    } else if ((count == 2) && cpu->cycle >= 57164) {
-        set_ppu_status_vblank_bit(cpu->cpu_ppu_io);
-        ++count;
-    }
-}
-
-static void cpu_ppu_buffered_writes(CpuPpuShare *cpu_ppu_io, Cpu6502 *cpu)
-{
-    if (cpu_ppu_io->buffer_write) {
-        --cpu_ppu_io->buffer_counter;
-        if (cpu_ppu_io->buffer_address == 0x2001 && (cpu_ppu_io->buffer_value & 0x08)) {
-            if (cpu_ppu_io->buffer_counter == 3)
-                cpu_ppu_io->bg_early_enable_mask = true;
-        }
-        if (cpu_ppu_io->buffer_address == 0x2001 && !(cpu_ppu_io->buffer_value & 0x08)) {
-            if (cpu_ppu_io->buffer_counter == 3)
-                cpu_ppu_io->bg_early_disable_mask = true;
-        }
-        if (!cpu_ppu_io->buffer_counter) {
-            write_ppu_reg(cpu_ppu_io->buffer_address, cpu_ppu_io->buffer_value, cpu);
-            cpu_ppu_io->buffer_write = false;
-            cpu_ppu_io->buffer_counter = 6;
-            cpu_ppu_io->bg_early_enable_mask = false;
-            cpu_ppu_io->bg_early_disable_mask = false;
-        }
-    }
-}
-
-static inline void clock_nes(Cpu6502 *cpu, Ppu2C02 *ppu)
-{
-    clock_cpu(cpu);
-    ppu_vblank_warmup_seq(cpu);
-    cpu_ppu_buffered_writes(ppu->cpu_ppu_io, cpu);
-    clock_ppu(ppu);
-    cpu_ppu_buffered_writes(ppu->cpu_ppu_io, cpu);
-    clock_ppu(ppu);
-    cpu_ppu_buffered_writes(ppu->cpu_ppu_io, cpu);
-    clock_ppu(ppu);
-}
+// clock_nes_scanline() defined in ppu.c — runs 114 CPU cycles + 1 PPU scanline
 
 // ============================================================================
 // NES Gamepad
@@ -259,32 +208,32 @@ int main(void)
     init_pc(cpu);
     printf("Emulation starting (PC=0x%04X)\n", cpu->PC);
 
-    // Main emulation loop
+    // Main emulation loop (scanline-based for speed)
     uint32_t nes_frames = 0;
-    uint32_t clocks = 0;
     uint32_t last_report = to_ms_since_boot(get_absolute_time());
     while (1) {
-        // Run NES in tight batch (reduce loop overhead)
-        for (int batch = 0; batch < 1000; batch++) {
-            clock_nes(cpu, ppu);
+        // Run one scanline: 114 CPU cycles + PPU scanline render
+        clock_nes_scanline(cpu, ppu);
 
-            if (ppu->scanline == 241 && ppu->cycle == 0) {
-                nes_frames++;
-                generate_silence();
-                poll_nespad_input(cpu);
-            }
+        // VBlank start: feed audio, poll input
+        if (ppu->scanline == 242) { // just passed 241
+            nes_frames++;
+            generate_silence();
+            poll_nespad_input(cpu);
         }
-        clocks += 1000;
 
         // Print stats every 2 seconds
         uint32_t now = to_ms_since_boot(get_absolute_time());
         if (now - last_report >= 2000) {
             uint32_t dt = now - last_report;
-            printf("NES fps=%lu  clk/s=%lu\n",
+            printf("fps=%lu PC=%04X cyc=%lu ctrl=%02X mask=%02X stat=%02X\n",
                    (unsigned long)(nes_frames * 1000 / dt),
-                   (unsigned long)((uint64_t)clocks * 1000 / dt));
+                   cpu->PC,
+                   (unsigned long)cpu->cycle,
+                   ppu->cpu_ppu_io->ppu_ctrl,
+                   ppu->cpu_ppu_io->ppu_mask,
+                   ppu->cpu_ppu_io->ppu_status);
             nes_frames = 0;
-            clocks = 0;
             last_report = now;
         }
     }

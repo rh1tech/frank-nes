@@ -1,0 +1,179 @@
+{
+	"version": 3,
+	"cmakeMinimumRequired": {
+		"major": 3,
+		"minor": 21,
+		"patch": 0
+	},
+	"configurePresets": [
+		{
+			"name": "release",
+			"binaryDir": "${sourceDir}/build/${presetName}"
+		},
+		{
+			"name": "debug",
+			"binaryDir": "${sourceDir}/build/${presetName}",
+			"cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+		},
+		{
+			"name": "debug-asan",
+			"inherits": "debug",
+			"binaryDir": "${sourceDir}/build/${presetName}",
+			"cacheVariables": { "ASAN": "ON" }
+		},
+		{
+			"name": "coverage-debug",
+			"inherits": "debug",
+			"cacheVariables": { "COVERAGE": "ON" }
+		},
+		{
+			"name": "coverage-debug-and-tests",
+			"inherits": "coverage-debug",
+			"cacheVariables": { "TSTSRCCOVERAGE": "ON" }
+		},
+		{
+			"name": "release-clang",
+			"inherits": "release",
+			"cacheVariables": { "CMAKE_C_COMPILER": "clang" }
+		},
+		{
+			"name": "release-gcc",
+			"inherits": "release",
+			"cacheVariables": { "CMAKE_C_COMPILER": "gcc" }
+		},
+		{
+			"name": "debug-clang",
+			"inherits": "debug",
+			"cacheVariables": { "CMAKE_C_COMPILER": "clang" }
+		},
+		{
+			"name": "debug-gcc",
+			"inherits": "debug",
+			"cacheVariables": { "CMAKE_C_COMPILER": "gcc" }
+		},
+		{
+			"name": "debug-asan-clang",
+			"inherits": "debug-asan",
+			"cacheVariables": { "CMAKE_C_COMPILER": "clang" }
+		},
+		{
+			"name": "debug-asan-gcc",
+			"inherits": "debug-asan",
+			"cacheVariables": { "CMAKE_C_COMPILER": "gcc" }
+		}
+	],
+	"buildPresets": [
+		{
+			"name": "release",
+			"configurePreset": "release",
+			"targets": [ "all", "runtests" ]
+		},
+		{
+			"name": "debug",
+			"configurePreset": "debug",
+			"targets": [ "all", "runtests" ]
+		},
+		{
+			"name": "coverage-debug",
+			"configurePreset": "coverage-debug",
+			"targets": [ "all", "runtests", "runcoveragedata" ]
+		},
+		{
+			"name": "coverage-debug-and-tests",
+			"configurePreset": "coverage-debug-and-tests",
+			"targets": [ "all", "runtests", "runcoveragedata" ]
+		},
+		{
+			"name": "release-clang",
+			"configurePreset": "release-clang",
+			"targets": [ "all", "runtests" ]
+		},
+		{
+			"name": "release-gcc",
+			"configurePreset": "release-gcc",
+			"targets": [ "all", "runtests" ]
+		},
+		{
+			"name": "debug-gcc",
+			"configurePreset": "debug-gcc",
+			"targets": [ "all", "runtests" ]
+		},
+		{
+			"name": "debug-clang",
+			"configurePreset": "debug-clang",
+			"targets": [ "all", "runtests" ]
+		},
+		{
+			"name": "debug-asan",
+			"configurePreset": "debug-asan",
+			"targets": [ "all", "runtests" ]
+		},
+		{
+			"name": "debug-asan-clang",
+			"configurePreset": "debug-asan-clang",
+			"targets": [ "all", "runtests" ]
+		},
+		{
+			"name": "debug-asan-gcc",
+			"configurePreset": "debug-asan-gcc",
+			"targets": [ "all", "runtests" ]
+		}
+	],
+	"testPresets": [
+		{
+			"name": "release",
+			"configurePreset": "release",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "debug",
+			"configurePreset": "debug",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "coverage-debug",
+			"configurePreset": "coverage-debug",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "coverage-debug-and-tests",
+			"configurePreset": "coverage-debug-and-tests",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "release-clang",
+			"configurePreset": "release-clang",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "release-gcc",
+			"configurePreset": "release-gcc",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "debug-gcc",
+			"configurePreset": "debug-gcc",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "debug-clang",
+			"configurePreset": "debug-clang",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "debug-asan",
+			"configurePreset": "debug-asan",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "debug-asan-clang",
+			"configurePreset": "debug-asan-clang",
+			"output": { "outputOnFailure": true }
+		},
+		{
+			"name": "debug-asan-gcc",
+			"configurePreset": "debug-asan-gcc",
+			"output": { "outputOnFailure": true }
+		}
+	]
+}

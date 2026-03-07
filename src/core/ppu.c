@@ -1,4 +1,5 @@
 #include "ppu.h"
+#include "cpu.h"
 #include "cpu_ppu_interface.h"
 #include "bits_and_bytes.h"
 
@@ -1332,4 +1333,236 @@ void clock_ppu(Ppu2C02* p)
 			}
 		}
 	}
+}
+
+
+// ============================================================================
+// Fast Scanline Renderer (for embedded targets)
+//
+// Renders an entire scanline at once instead of per-cycle.
+// Trades cycle-accuracy for ~10x speedup.
+// ============================================================================
+
+static void render_bg_scanline(Ppu2C02 *p, uint32_t scanline)
+{
+	if (!ppu_show_bg(p->cpu_ppu_io)) {
+		// No background - fill with backdrop color
+		uint8_t backdrop = read_from_ppu_vram(&p->vram, 0x3F00);
+		for (int x = 0; x < 256; x++)
+			set_rgba_pixel_in_buffer(pixels, 256, x, scanline, palette[backdrop & 0x3F], 0xFF);
+		return;
+	}
+
+	uint16_t v = p->vram_addr;
+	uint16_t base_pt = ppu_base_pt_address(p->cpu_ppu_io);
+	uint8_t fine_x = p->fine_x;
+	bool mask_left = ppu_mask_left_8px_bg(p->cpu_ppu_io);
+	bool greyscale = ppu_show_greyscale(p->cpu_ppu_io);
+
+	for (int tile = 0; tile < 33; tile++) {
+		// Fetch nametable byte
+		uint16_t nt_addr = 0x2000 | (v & 0x0FFF);
+		uint8_t nt_byte = read_from_ppu_vram(&p->vram, nt_addr);
+
+		// Fetch attribute byte
+		uint16_t at_addr = 0x23C0 | (v & 0x0C00)
+		                 | ((v >> 4) & 0x38) | ((v >> 2) & 0x07);
+		uint8_t at_byte = read_from_ppu_vram(&p->vram, at_addr);
+		// Select 2-bit palette from attribute
+		if (v & 0x0002) at_byte >>= 2;
+		if (v & 0x0040) at_byte >>= 4;
+		uint8_t at_bits = (at_byte & 0x03) << 2;
+
+		// Fetch pattern table bytes
+		uint16_t fine_y = (v >> 12) & 0x07;
+		uint16_t pt_addr = base_pt + (nt_byte << 4) + fine_y;
+		uint8_t pt_lo = read_from_ppu_vram(&p->vram, pt_addr);
+		uint8_t pt_hi = read_from_ppu_vram(&p->vram, pt_addr + 8);
+
+		// Render 8 pixels from this tile
+		for (int bit = 7; bit >= 0; bit--) {
+			int screen_x = tile * 8 + (7 - bit) - fine_x;
+			if (screen_x < 0 || screen_x >= 256) continue;
+
+			uint8_t color_idx = ((pt_hi >> bit) & 1) << 1 | ((pt_lo >> bit) & 1);
+			uint8_t pal_addr;
+			if (color_idx == 0) {
+				pal_addr = 0; // backdrop
+			} else {
+				pal_addr = at_bits | color_idx;
+			}
+
+			if (mask_left && screen_x < 8) pal_addr = 0;
+
+			uint8_t col = read_from_ppu_vram(&p->vram, 0x3F00 + pal_addr);
+			if (greyscale) col &= 0x30;
+			set_rgba_pixel_in_buffer(pixels, 256, screen_x, scanline, palette[col & 0x3F], 0xFF);
+		}
+
+		// Increment coarse X in v
+		if ((v & 0x001F) == 31) {
+			v &= ~0x001F;
+			v ^= 0x0400; // switch horizontal nametable
+		} else {
+			v++;
+		}
+	}
+}
+
+static void render_sprites_scanline(Ppu2C02 *p, uint32_t scanline)
+{
+	if (!ppu_show_sprite(p->cpu_ppu_io)) return;
+
+	uint8_t sprite_height = ppu_sprite_height(p->cpu_ppu_io);
+	bool mask_left = ppu_mask_left_8px_sprite(p->cpu_ppu_io);
+	bool greyscale = ppu_show_greyscale(p->cpu_ppu_io);
+	uint16_t sprite_pt_addr = ppu_sprite_pattern_table_addr(p->cpu_ppu_io);
+
+	// Track which pixels already have a sprite (for priority)
+	uint8_t sprite_drawn[256] = {0};
+	// Track opaque bg for sprite 0 hit
+	bool check_sp0_hit = ppu_show_bg(p->cpu_ppu_io);
+
+	int sprites_found = 0;
+	// Evaluate sprites in reverse priority (high index first, low overwrites)
+	for (int s = 63; s >= 0; s--) {
+		uint8_t y = p->oam[s * 4 + 0];
+		uint8_t tile = p->oam[s * 4 + 1];
+		uint8_t attr = p->oam[s * 4 + 2];
+		uint8_t x = p->oam[s * 4 + 3];
+
+		int row = (int)scanline - (int)y - 1;
+		if (row < 0 || row >= sprite_height) continue;
+		if (sprites_found >= 8 && s != 0) continue; // sprite overflow (simplified)
+		sprites_found++;
+
+		// Vertical flip
+		bool flip_v = attr & 0x80;
+		bool flip_h = attr & 0x40;
+		bool behind_bg = attr & 0x20;
+		uint8_t pal_hi = (attr & 0x03) << 2;
+
+		int pattern_row = flip_v ? (sprite_height - 1 - row) : row;
+
+		uint16_t addr;
+		if (sprite_height == 16) {
+			uint16_t bank = (tile & 1) ? 0x1000 : 0x0000;
+			uint8_t tile_num = tile & 0xFE;
+			if (pattern_row >= 8) {
+				tile_num++;
+				pattern_row -= 8;
+			}
+			addr = bank + (tile_num << 4) + pattern_row;
+		} else {
+			addr = sprite_pt_addr + (tile << 4) + pattern_row;
+		}
+
+		uint8_t pt_lo = read_from_ppu_vram(&p->vram, addr);
+		uint8_t pt_hi = read_from_ppu_vram(&p->vram, addr + 8);
+
+		for (int bit = 7; bit >= 0; bit--) {
+			int px = x + (flip_h ? bit : (7 - bit));
+			if (px >= 256) continue;
+
+			uint8_t color_idx = ((pt_hi >> bit) & 1) << 1 | ((pt_lo >> bit) & 1);
+			if (color_idx == 0) continue; // transparent
+
+			if (mask_left && px < 8) continue;
+
+			// Sprite 0 hit detection
+			if (s == 0 && check_sp0_hit && px < 255) {
+				// Check if bg pixel is opaque at this position
+				uint32_t bg_pixel = pixels[scanline * 256 + px];
+				uint8_t bg_r = (bg_pixel >> 16) & 0xFF;
+				uint8_t bg_g = (bg_pixel >> 8) & 0xFF;
+				uint8_t bg_b = bg_pixel & 0xFF;
+				uint32_t backdrop = palette[read_from_ppu_vram(&p->vram, 0x3F00) & 0x3F];
+				if (bg_pixel != (0xFF000000 | backdrop)) {
+					p->cpu_ppu_io->ppu_status |= 0x40;
+				}
+			}
+
+			if (sprite_drawn[px] && s > 0) continue; // lower priority
+			sprite_drawn[px] = 1;
+
+			// Behind-background sprites: don't overwrite opaque bg
+			if (behind_bg) {
+				uint32_t bg_pixel = pixels[scanline * 256 + px];
+				uint32_t backdrop = palette[read_from_ppu_vram(&p->vram, 0x3F00) & 0x3F];
+				if (bg_pixel != (0xFF000000 | backdrop)) continue;
+			}
+
+			uint8_t col = read_from_ppu_vram(&p->vram, 0x3F10 + pal_hi + color_idx);
+			if (greyscale) col &= 0x30;
+			set_rgba_pixel_in_buffer(pixels, 256, px, scanline, palette[col & 0x3F], 0xFF);
+		}
+	}
+
+	if (sprites_found > 8) {
+		p->cpu_ppu_io->ppu_status |= 0x20; // sprite overflow
+	}
+}
+
+// ppu_render_scanline_fast is no longer used directly — logic moved into clock_nes_scanline
+void ppu_render_scanline_fast(Ppu2C02 *p)
+{
+	(void)p;
+}
+
+// Run one scanline: set PPU state first so CPU can see it, then run CPU, then render pixels
+void clock_nes_scanline(Cpu6502 *cpu, Ppu2C02 *ppu)
+{
+	// 1. Clear per-cycle suppress flags (normally done every PPU cycle)
+	ppu->cpu_ppu_io->suppress_vbl_status = false;
+	ppu->cpu_ppu_io->suppress_nmi_flag = false;
+
+	// 2. Set PPU flags BEFORE CPU runs (so CPU polling sees them)
+	if (ppu->scanline == 241) {
+		// VBlank start
+		set_ppu_status_vblank_bit(ppu->cpu_ppu_io);
+		if (ppu_ctrl_gen_nmi_bit_set(ppu->cpu_ppu_io)) {
+			ppu->cpu_ppu_io->nmi_signal_low = true;
+		}
+	} else if (ppu->scanline == 261) {
+		// Pre-render: clear VBlank, sprite hit, overflow
+		ppu->cpu_ppu_io->ppu_status &= ~0xE0;
+		ppu->cpu_ppu_io->nmi_signal_low = false;
+		ppu->cpu_ppu_io->nmi_for_frame = false;
+		ppu->odd_frame = !ppu->odd_frame;
+		// Copy vertical bits from t to v
+		if (ppu_mask_bg_or_sprite_enabled(ppu->cpu_ppu_io)) {
+			ppu->vram_addr = (ppu->vram_addr & ~0x7BE0) | (ppu->vram_tmp_addr & 0x7BE0);
+		}
+	}
+
+	// 2. Run CPU for one scanline (~114 cycles)
+	for (int i = 0; i < 114; i++) {
+		clock_cpu(cpu);
+		// Apply buffered PPU register writes (critical - writes are delayed)
+		if (ppu->cpu_ppu_io->buffer_write) {
+			--ppu->cpu_ppu_io->buffer_counter;
+			if (!ppu->cpu_ppu_io->buffer_counter) {
+				write_ppu_reg(ppu->cpu_ppu_io->buffer_address,
+				              ppu->cpu_ppu_io->buffer_value, cpu);
+				ppu->cpu_ppu_io->buffer_write = false;
+				ppu->cpu_ppu_io->buffer_counter = 6;
+			}
+		}
+	}
+
+	// 3. Render visible scanline pixels
+	if (ppu->scanline <= 239) {
+		render_bg_scanline(ppu, ppu->scanline);
+		render_sprites_scanline(ppu, ppu->scanline);
+		// Scroll updates at end of visible scanline
+		if (ppu_mask_bg_or_sprite_enabled(ppu->cpu_ppu_io)) {
+			inc_vert_scroll(ppu->cpu_ppu_io);
+			ppu->vram_addr = (ppu->vram_addr & ~0x041F) | (ppu->vram_tmp_addr & 0x041F);
+		}
+	}
+
+	// 4. Advance scanline
+	ppu->old_scanline = ppu->scanline;
+	ppu->scanline = (ppu->scanline + 1) % 262;
+	ppu->cycle = 0;
 }
