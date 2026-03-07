@@ -1,0 +1,8 @@
+build_pico/
+build/
+deps/
+*.uf2
+*.elf
+*.o
+*.d
+.DS_Store
