@@ -244,18 +244,7 @@ static void real_main(void)
     paint_stack();
     sleep_ms(500);
 
-    generate_test_pattern();
-
-    /* DVI mode during init — no data islands, immune to flash contention */
-    hstx_di_queue_init();
-    video_output_init(FRAME_WIDTH, FRAME_HEIGHT);
-    video_output_set_dvi_mode(true);
-    video_output_set_scanline_callback(scanline_callback);
-    video_output_set_vsync_callback(vsync_cb);
-
-    multicore_launch_core1(video_output_core1_run);
-    sleep_ms(100);
-
+    /* All QuickNES init BEFORE Core 1 — no flash contention, no mode switch */
     for (int i = 0; i < 50; i++) {
         if (stdio_usb_connected()) break;
         sleep_ms(100);
@@ -264,22 +253,37 @@ static void real_main(void)
     printf("sys_clk: %lu Hz\n", (unsigned long)clock_get_hz(clk_sys));
 
     printf("qnes_init...\n");
-    if (qnes_init(SAMPLE_RATE) != 0)
-        error_loop("qnes_init failed");
+    if (qnes_init(SAMPLE_RATE) != 0) {
+        printf("qnes_init FAILED\n");
+        while (1) sleep_ms(100);
+    }
     printf("qnes_init OK\n");
 
 #ifdef HAS_NES_ROM
     long rom_size = (long)(nes_rom_end - nes_rom_data);
     printf("qnes_load_rom (%ld bytes)...\n", rom_size);
-    if (qnes_load_rom(nes_rom_data, rom_size) != 0)
-        error_loop("qnes_load_rom failed");
+    if (qnes_load_rom(nes_rom_data, rom_size) != 0) {
+        printf("qnes_load_rom FAILED\n");
+        while (1) sleep_ms(100);
+    }
     printf("ROM loaded OK\n");
+#endif
 
-    /* Switch to HDMI with NES audio at 44100 Hz */
-    pico_hdmi_set_audio_sample_rate(SAMPLE_RATE);
+    /* Start HDMI directly — all flash-heavy init is done */
+    frame_pixels = test_pixels;
+    frame_pitch = NES_WIDTH;
+
+    hstx_di_queue_init();
     feed_silence();
-    video_output_set_dvi_mode(false);
-    printf("HDMI mode active\n");
+    video_output_set_vsync_callback(vsync_cb);
+    video_output_init(FRAME_WIDTH, FRAME_HEIGHT);
+    pico_hdmi_set_audio_sample_rate(SAMPLE_RATE);
+    video_output_set_scanline_callback(scanline_callback);
+    multicore_launch_core1(video_output_core1_run);
+    sleep_ms(100);
+    printf("HDMI active\n");
+
+#ifdef HAS_NES_ROM
 
     uint32_t frame_count = 0;
     while (1) {
@@ -319,9 +323,7 @@ static void real_main(void)
         frame_count++;
     }
 #else
-    printf("No ROM embedded. Showing test pattern.\n");
-    feed_silence();
-    video_output_set_dvi_mode(false);
+    printf("No ROM embedded.\n");
     while (1) { sleep_ms(100); }
 #endif
 }
