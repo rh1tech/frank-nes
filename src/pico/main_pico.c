@@ -392,14 +392,13 @@ static void real_main(void)
         int joypad = (frame_count >= 60 && frame_count < 63) ? 0x08 : 0;
         qnes_emulate_frame(joypad, 0);
 
-        /* Encode NES audio directly into DI queue on Core 0.
-         * Pad to 735 samples (44100/60) to match ISR consumption rate. */
+        /* Push NES audio into DI queue. No padding — produce only what
+         * the NES generates. Carry handles 4-sample boundary. Tiny rate
+         * deficit (~1.5 samples/frame) handled by ISR silence fallback. */
         int16_t tmp[1024];
         long n = qnes_read_samples(tmp, 1024);
-        int target = SAMPLE_RATE / 60;
-        while (n < target && n < 1024)
-            tmp[n++] = 0;
-        audio_push_samples(tmp, (int)n);
+        if (n > 0)
+            audio_push_samples(tmp, (int)n);
 
         update_palette();
         frame_pitch = 272;
