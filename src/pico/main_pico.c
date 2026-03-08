@@ -244,19 +244,15 @@ static void real_main(void)
     paint_stack();
     sleep_ms(500);
 
-    /* Black screen during init (test_pixels and rgb565_palette are zero-initialized) */
-    frame_pixels = test_pixels;
-    frame_pitch = NES_WIDTH;
+    generate_test_pattern();
 
-    /* HDMI init — matches pico-infonesPlus proven init order.
-     * Pre-fill silence so ISR has valid packets from the first scanline.
-     * During qnes_load_rom, silence fallback in ISR keeps signal alive. */
+    /* DVI mode during init — no data islands, immune to flash contention */
     hstx_di_queue_init();
-    feed_silence();
-    video_output_set_vsync_callback(vsync_cb);
     video_output_init(FRAME_WIDTH, FRAME_HEIGHT);
-    pico_hdmi_set_audio_sample_rate(SAMPLE_RATE);
+    video_output_set_dvi_mode(true);
     video_output_set_scanline_callback(scanline_callback);
+    video_output_set_vsync_callback(vsync_cb);
+
     multicore_launch_core1(video_output_core1_run);
     sleep_ms(100);
 
@@ -278,6 +274,12 @@ static void real_main(void)
     if (qnes_load_rom(nes_rom_data, rom_size) != 0)
         error_loop("qnes_load_rom failed");
     printf("ROM loaded OK\n");
+
+    /* Switch to HDMI with NES audio at 44100 Hz */
+    pico_hdmi_set_audio_sample_rate(SAMPLE_RATE);
+    feed_silence();
+    video_output_set_dvi_mode(false);
+    printf("HDMI mode active\n");
 
     uint32_t frame_count = 0;
     while (1) {
@@ -318,6 +320,8 @@ static void real_main(void)
     }
 #else
     printf("No ROM embedded. Showing test pattern.\n");
+    feed_silence();
+    video_output_set_dvi_mode(false);
     while (1) { sleep_ms(100); }
 #endif
 }
