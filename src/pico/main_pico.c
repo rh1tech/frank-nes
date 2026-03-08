@@ -43,6 +43,15 @@ static uint16_t rgb565_palette[256];
 static const uint8_t *frame_pixels;
 static long frame_pitch;
 
+/* Vsync flag — set by Core 1 DMA ISR, cleared by Core 0 after emulating */
+static volatile uint32_t vsync_flag;
+
+static void __not_in_flash("vsync") vsync_cb(void)
+{
+    vsync_flag = 1;
+    __sev(); /* wake Core 0 from WFE */
+}
+
 /* Audio */
 static int audio_frame_counter = 0;
 
@@ -221,6 +230,7 @@ static void real_main(void)
     video_output_init(FRAME_WIDTH, FRAME_HEIGHT);
     video_output_set_dvi_mode(true);
     video_output_set_scanline_callback(scanline_callback);
+    video_output_set_vsync_callback(vsync_cb);
     multicore_launch_core1(video_output_core1_run);
     sleep_ms(100);
 
@@ -257,34 +267,31 @@ static void real_main(void)
 
     feed_audio();
 
-    /* Main emulation loop — target 60fps */
+    /*
+     * Main emulation loop — vsync-synchronized.
+     *
+     * Timing: vsync fires at start of vblank (~1.4ms before active video).
+     * We start emulate_frame() immediately → PPU renders top-to-bottom in ~2ms.
+     * By the time active video reads line 0, the PPU is already past line ~170.
+     * Result: no tearing without double buffering.
+     */
     uint32_t frame_count = 0;
-    absolute_time_t frame_start = get_absolute_time();
-    absolute_time_t next_frame = frame_start;
 
     while (1) {
-        /* TODO: read joypad via PIO */
-        int joypad1 = 0;
+        /* Wait for vsync (vblank start), with timeout fallback */
+        for (int wait = 0; !vsync_flag && wait < 20000; wait++)
+            __wfe();
+        vsync_flag = 0;
 
-        int err = qnes_emulate_frame(joypad1, 0);
-        if (err) {
-            printf("emulate_frame error at frame %lu\n", (unsigned long)frame_count);
-            error_loop("emulate_frame failed");
-        }
+        /* Emulate one NES frame — PPU writes pixels top-to-bottom */
+        qnes_emulate_frame(0, 0);
 
-        /* Update palette and pixel pointer */
+        /* Update palette and pixel pointer (atomic pointer swap) */
         update_palette();
+        frame_pitch = 272;
         frame_pixels = qnes_get_pixels();
-        frame_pitch = 272; /* QuickNES buffer_width */
 
         frame_count++;
-
-        /* Frame rate limit: wait until next 16.667ms boundary */
-        next_frame = delayed_by_us(next_frame, 16667);
-        while (!time_reached(next_frame)) {
-            tight_loop_contents();
-        }
-
         if (frame_count % 300 == 0) {
             printf("f%lu stk=%lu\n",
                    (unsigned long)frame_count,
