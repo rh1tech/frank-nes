@@ -586,21 +586,23 @@ static void real_main(void)
                  NESPAD_CLK_PIN, NESPAD_DATA_PIN, NESPAD_LATCH_PIN);
 
     if (rom_loaded) {
+        /* Trigger first gamepad read before entering loop */
+        nespad_read_start();
+
         while (1) {
-            /* Wait for vsync AND ensure the previous pending frame was
-             * consumed by vsync_cb.  Without the pending_pixels check,
-             * a "stale" vsync_flag (set while we were still emulating)
-             * lets us proceed immediately — and we'd start writing to
-             * the back-buffer that is still being displayed. */
-            for (int wait = 0;
-                 (!vsync_flag || pending_pixels) && wait < 20000;
-                 wait++)
+            /* Wait for vsync. No double-buffer gate — frame pointer is
+             * applied immediately after emulation for lowest input latency. */
+            for (int wait = 0; !vsync_flag && wait < 20000; wait++)
                 __wfe();
             vsync_flag = 0;
 
-            nespad_read();
+            /* Collect gamepad result (PIO already done) and trigger next read
+             * immediately — it runs in parallel with emulation below. */
+            nespad_read_finish();
             int joypad1 = nespad_to_qnes(nespad_state);
             int joypad2 = nespad_to_qnes(nespad_state2);
+            nespad_read_start();
+
             qnes_emulate_frame(joypad1, joypad2);
 
             /* Push NES audio into DI queue. No padding — produce only what
@@ -614,8 +616,12 @@ static void real_main(void)
             }
 
             update_palette();
-            pending_pitch = 272;
-            pending_pixels = qnes_get_pixels();
+
+            /* Apply frame immediately — reduces input latency by 1 frame
+             * vs double-buffered vsync. Minor tearing possible but
+             * acceptable for retro games. */
+            frame_pitch = 272;
+            frame_pixels = qnes_get_pixels();
 
         }
     } else {

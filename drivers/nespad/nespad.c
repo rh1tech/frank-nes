@@ -96,27 +96,35 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,
     return true;
 }
 
-/*
- * Read NES gamepad state. Triggers PIO read, blocks ~100µs for result.
- * Right-shift autopush at 8 bits: first bit (A) lands at LSB.
- * Result after >>24 ^ 0xFF: 0x01=A, 0x02=B, 0x04=Sel, 0x08=Start,
- * 0x10=Up, 0x20=Down, 0x40=Left, 0x80=Right.
- */
-void nespad_read()
+/* Trigger PIO read (non-blocking). Result ready in ~100µs via nespad_read_finish(). */
+void nespad_read_start(void)
+{
+    if (!pad_initialized || sm < 0)
+        return;
+    pio_interrupt_clear(pio, 0);
+}
+
+/* Wait for PIO read to complete and update nespad_state.
+ * Call ~100µs+ after nespad_read_start(). If called later, returns instantly.
+ * Uses timeout to avoid deadlock if PIO fails. */
+void nespad_read_finish(void)
 {
     if (!pad_initialized || sm < 0)
         return;
 
-    /* Trigger PIO read by clearing IRQ 0 */
-    pio_interrupt_clear(pio, 0);
+    /* Wait up to ~500µs for PIO to push result (read takes ~100µs) */
+    for (int i = 0; i < 5000 && pio_sm_is_rx_fifo_empty(pio, sm); i++)
+        tight_loop_contents();
+    if (pio_sm_is_rx_fifo_empty(pio, sm))
+        return; /* timeout — keep previous state */
 
-    /* Block until PIO pushes 8-bit result to FIFO (~100µs) */
-    uint32_t raw = pio_sm_get_blocking(pio, sm);
+    uint32_t raw = pio->rxf[sm];
 
-    /* 8-bit result is in upper byte (right-shift autopush at 8 bits) */
-    uint8_t buttons = (raw >> 24) ^ 0xFF; /* invert: pressed = 1 */
+    /* 8-bit result in upper byte (right-shift autopush at 8 bits).
+     * Bit order: 0x01=A, 0x02=B, 0x04=Sel, 0x08=Start,
+     * 0x10=Up, 0x20=Down, 0x40=Left, 0x80=Right. */
+    uint8_t buttons = (raw >> 24) ^ 0xFF;
 
-    /* Convert to DPAD_* format used by nespad.h */
     uint32_t state = 0;
     if (buttons & 0x01) state |= DPAD_A;
     if (buttons & 0x02) state |= DPAD_B;
@@ -128,5 +136,12 @@ void nespad_read()
     if (buttons & 0x80) state |= DPAD_RIGHT;
 
     nespad_state = state;
-    nespad_state2 = 0; /* No Joy2 in single-pin mode */
+    nespad_state2 = 0;
+}
+
+/* Convenience: trigger + block. Use start/finish for overlapped reads. */
+void nespad_read(void)
+{
+    nespad_read_start();
+    nespad_read_finish();
 }
