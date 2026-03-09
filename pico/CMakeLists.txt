@@ -12,9 +12,11 @@ set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
 
 set(PROJECT_ROOT ${CMAKE_CURRENT_LIST_DIR}/..)
-set(DRIVERSDIR ${PROJECT_ROOT}/drivers)
-set(PICODIR ${PROJECT_ROOT}/src/pico)
-set(QNESDIR ${PROJECT_ROOT}/nes_emu)
+set(SRCDIR ${PROJECT_ROOT}/src)
+set(DRIVERSDIR ${SRCDIR}/drivers)
+set(COREDIR ${SRCDIR}/core)
+set(EMU2413DIR ${SRCDIR}/emu2413)
+set(PICODIR ${SRCDIR}/platform/pico)
 
 # HSTX clocked from PLL_USB at 126MHz (reconfigured in main)
 add_compile_definitions(MODE_HSTX_CLK_DIV=1)
@@ -34,50 +36,57 @@ if(USB_HID_ENABLED)
     add_subdirectory(${DRIVERSDIR}/usbhid usbhid)
 endif()
 
-# QuickNES emulation core sources (excluding NTSC filter)
+# QuickNES emulation core sources
 set(QNES_SOURCES
-    ${QNESDIR}/Nes_Emu.cpp
-    ${QNESDIR}/Nes_Core.cpp
-    ${QNESDIR}/Nes_Cpu.cpp
-    ${QNESDIR}/Nes_Ppu.cpp
-    ${QNESDIR}/Nes_Ppu_Impl.cpp
-    ${QNESDIR}/Nes_Ppu_Rendering.cpp
-    ${QNESDIR}/Nes_Cart.cpp
-    ${QNESDIR}/Nes_Mapper.cpp
-    ${QNESDIR}/Nes_Apu.cpp
-    ${QNESDIR}/Nes_Oscs.cpp
-    ${QNESDIR}/Nes_File.cpp
-    ${QNESDIR}/Nes_State.cpp
-    ${QNESDIR}/Nes_Buffer.cpp
-    ${QNESDIR}/Nes_Effects_Buffer.cpp
-    ${QNESDIR}/Blip_Buffer.cpp
-    ${QNESDIR}/Multi_Buffer.cpp
-    ${QNESDIR}/Effects_Buffer.cpp
-    ${QNESDIR}/Data_Reader.cpp
-    ${QNESDIR}/abstract_file.cpp
-    ${QNESDIR}/nes_data.cpp
-    ${QNESDIR}/nes_util.cpp
-    ${QNESDIR}/apu_state.cpp
-    ${QNESDIR}/Nes_Fme7_Apu.cpp
-    ${QNESDIR}/Nes_Namco_Apu.cpp
-    ${QNESDIR}/Nes_Vrc6_Apu.cpp
-    ${QNESDIR}/Nes_Vrc7.cpp
-    ${QNESDIR}/emu2413.cpp
-    ${QNESDIR}/emu2413_state.cpp
-    ${QNESDIR}/quicknes.cpp
+    ${COREDIR}/nes_emu.cpp
+    ${COREDIR}/nes_core.cpp
+    ${COREDIR}/nes_cpu.cpp
+    ${COREDIR}/nes_ppu.cpp
+    ${COREDIR}/nes_ppu_impl.cpp
+    ${COREDIR}/nes_ppu_rendering.cpp
+    ${COREDIR}/nes_cart.cpp
+    ${COREDIR}/nes_mapper.cpp
+    ${COREDIR}/nes_apu.cpp
+    ${COREDIR}/nes_oscs.cpp
+    ${COREDIR}/nes_file.cpp
+    ${COREDIR}/nes_state.cpp
+    ${COREDIR}/nes_buffer.cpp
+    ${COREDIR}/nes_effects_buffer.cpp
+    ${COREDIR}/blip_buffer.cpp
+    ${COREDIR}/multi_buffer.cpp
+    ${COREDIR}/effects_buffer.cpp
+    ${COREDIR}/data_reader.cpp
+    ${COREDIR}/abstract_file.cpp
+    ${COREDIR}/nes_data.cpp
+    ${COREDIR}/nes_util.cpp
+    ${COREDIR}/apu_state.cpp
+    ${COREDIR}/nes_fme7_apu.cpp
+    ${COREDIR}/nes_namco_apu.cpp
+    ${COREDIR}/nes_vrc6_apu.cpp
+    ${COREDIR}/nes_vrc7.cpp
+    ${COREDIR}/quicknes.cpp
+)
+
+# emu2413 (YM2413/VRC7 emulator)
+set(EMU2413_SOURCES
+    ${EMU2413DIR}/emu2413.cpp
+    ${EMU2413DIR}/emu2413_state.cpp
 )
 
 add_executable(murmnes
     ${PICODIR}/main_pico.c
-    ${DRIVERSDIR}/psram_init.c
-    ${DRIVERSDIR}/psram_allocator.c
+    ${DRIVERSDIR}/psram/psram_init.c
+    ${DRIVERSDIR}/psram/psram_allocator.c
     ${QNES_SOURCES}
+    ${EMU2413_SOURCES}
 )
 
 target_include_directories(murmnes PRIVATE
     ${PICODIR}
-    ${QNESDIR}
+    ${COREDIR}
+    ${EMU2413DIR}
     ${DRIVERSDIR}
+    ${DRIVERSDIR}/psram
 )
 
 target_compile_definitions(murmnes PRIVATE

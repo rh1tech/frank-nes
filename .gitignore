@@ -6,3 +6,4 @@ deps/
 *.o
 *.d
 .DS_Store
+roms/

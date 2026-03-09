@@ -1,3 +1,10 @@
+/*
+ * MurmNES - NES Emulator for RP2350
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://rh1.tech | https://github.com/rh1tech/murmnes
+ * SPDX-License-Identifier: MIT
+ */
+
 #include "bits_and_bytes.h"
 
 // 0th indexed bit position
