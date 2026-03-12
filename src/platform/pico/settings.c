@@ -55,7 +55,10 @@ extern void audio_fill_silence(int count);
 typedef enum {
     MENU_PLAYER1,
     MENU_PLAYER2,
-    MENU_SEPARATOR,
+    MENU_SEPARATOR1,
+    MENU_AUDIO,
+    MENU_VOLUME,
+    MENU_SEPARATOR2,
     MENU_EXIT,
     MENU_ITEM_COUNT
 } menu_item_t;
@@ -63,10 +66,15 @@ typedef enum {
 /* Input mode names */
 static const char *input_mode_names[] = {"ANY", "NES GAMEPAD 1", "NES GAMEPAD 2", "USB GAMEPAD 1", "USB GAMEPAD 2", "KEYBOARD", "DISABLED"};
 
+/* Audio mode names */
+static const char *audio_mode_names[] = {"HDMI", "I2S", "DISABLED"};
+
 /* Global settings */
 settings_t g_settings = {
     .p1_mode = INPUT_MODE_ANY,
     .p2_mode = INPUT_MODE_DISABLED,
+    .audio_mode = AUDIO_MODE_HDMI,
+    .volume = 100,
 };
 
 /* Local copy for editing */
@@ -231,13 +239,15 @@ static const char *get_menu_label(menu_item_t item) {
     switch (item) {
         case MENU_PLAYER1:   return "PLAYER 1";
         case MENU_PLAYER2:   return "PLAYER 2";
+        case MENU_AUDIO:     return "AUDIO";
+        case MENU_VOLUME:    return "VOLUME";
         case MENU_EXIT:      return "EXIT";
         default:             return "";
     }
 }
 
 static bool is_selectable(menu_item_t item) {
-    return item != MENU_SEPARATOR;
+    return item != MENU_SEPARATOR1 && item != MENU_SEPARATOR2;
 }
 
 static int next_selectable(int sel, int dir) {
@@ -251,10 +261,16 @@ static int next_selectable(int sel, int dir) {
     return s;
 }
 
+static char volume_text_buf[8];
+
 static const char *get_value_text(menu_item_t item) {
     switch (item) {
         case MENU_PLAYER1: return input_mode_names[edit_settings.p1_mode];
         case MENU_PLAYER2: return input_mode_names[edit_settings.p2_mode];
+        case MENU_AUDIO:   return audio_mode_names[edit_settings.audio_mode];
+        case MENU_VOLUME:
+            snprintf(volume_text_buf, sizeof(volume_text_buf), "%d%%", edit_settings.volume);
+            return volume_text_buf;
         default:           return NULL;
     }
 }
@@ -306,6 +322,16 @@ static void change_value(menu_item_t item, int dir) {
             }
             break;
         }
+        case MENU_AUDIO:
+            edit_settings.audio_mode = (uint8_t)((edit_settings.audio_mode + AUDIO_MODE_COUNT + dir) % AUDIO_MODE_COUNT);
+            break;
+        case MENU_VOLUME: {
+            int v = (int)edit_settings.volume + dir * VOLUME_STEP;
+            if (v < VOLUME_MIN) v = VOLUME_MIN;
+            if (v > VOLUME_MAX) v = VOLUME_MAX;
+            edit_settings.volume = (uint8_t)v;
+            break;
+        }
         default:
             break;
     }
@@ -330,7 +356,7 @@ static void draw_settings_menu(uint8_t *screen, int selected) {
     for (int i = 0; i < MENU_ITEM_COUNT; i++) {
         menu_item_t item = (menu_item_t)i;
 
-        if (item == MENU_SEPARATOR) {
+        if (item == MENU_SEPARATOR1 || item == MENU_SEPARATOR2) {
             draw_hline(screen, MENU_X, y + LINE_HEIGHT / 2, SCREEN_WIDTH - 2 * MENU_X, PAL_GRAY);
             y += LINE_HEIGHT;
             continue;
@@ -491,6 +517,7 @@ static int parse_input_mode(const char *value) {
 }
 
 static const char *input_mode_ini_names[] = {"any", "nes1", "nes2", "usb1", "usb2", "keyboard", "disabled"};
+static const char *audio_mode_ini_names[] = {"hdmi", "i2s", "disabled"};
 
 void settings_load(void) {
     FATFS fs;
@@ -511,6 +538,19 @@ void settings_load(void) {
         else if (parse_ini_line(line, "player2", value, sizeof(value))) {
             int m = parse_input_mode(value);
             if (m >= 0) g_settings.p2_mode = (uint8_t)m;
+        }
+        else if (parse_ini_line(line, "audio", value, sizeof(value))) {
+            if (strcmp(value, "i2s") == 0 || strcmp(value, "1") == 0)
+                g_settings.audio_mode = AUDIO_MODE_I2S;
+            else if (strcmp(value, "disabled") == 0 || strcmp(value, "2") == 0)
+                g_settings.audio_mode = AUDIO_MODE_DISABLED;
+            else
+                g_settings.audio_mode = AUDIO_MODE_HDMI;
+        }
+        else if (parse_ini_line(line, "volume", value, sizeof(value))) {
+            int v = atoi(value);
+            if (v >= VOLUME_MIN && v <= VOLUME_MAX)
+                g_settings.volume = (uint8_t)v;
         }
     }
 
@@ -535,9 +575,13 @@ void settings_save(void) {
     snprintf(buf, sizeof(buf),
         "; MurmNES Settings\n"
         "player1 = %s\n"
-        "player2 = %s\n",
+        "player2 = %s\n"
+        "audio = %s\n"
+        "volume = %d\n",
         input_mode_ini_names[g_settings.p1_mode],
-        input_mode_ini_names[g_settings.p2_mode]);
+        input_mode_ini_names[g_settings.p2_mode],
+        audio_mode_ini_names[g_settings.audio_mode],
+        g_settings.volume);
 
     UINT bw;
     f_write(&file, buf, strlen(buf), &bw);

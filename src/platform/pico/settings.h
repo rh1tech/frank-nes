@@ -21,9 +21,22 @@
 #define INPUT_MODE_DISABLED 6
 #define INPUT_MODE_COUNT    7
 
+// Audio output mode
+#define AUDIO_MODE_HDMI     0
+#define AUDIO_MODE_I2S      1
+#define AUDIO_MODE_DISABLED 2
+#define AUDIO_MODE_COUNT    3
+
+// Volume range (0-100, step 10)
+#define VOLUME_MIN  0
+#define VOLUME_MAX  100
+#define VOLUME_STEP 10
+
 typedef struct {
-    uint8_t p1_mode;    // Player 1 input mode (INPUT_MODE_*)
-    uint8_t p2_mode;    // Player 2 input mode (INPUT_MODE_*)
+    uint8_t p1_mode;      // Player 1 input mode (INPUT_MODE_*)
+    uint8_t p2_mode;      // Player 2 input mode (INPUT_MODE_*)
+    uint8_t audio_mode;   // Audio output (AUDIO_MODE_*)
+    uint8_t volume;       // Master volume 0-100
 } settings_t;
 
 extern settings_t g_settings;

@@ -31,6 +31,7 @@
 #include "nespad.h"
 #include "ps2kbd_wrapper.h"
 #include "settings.h"
+#include "i2s_audio.h"
 #include "ff.h"
 
 #if USB_HID_ENABLED
@@ -105,15 +106,12 @@ static void __not_in_flash("vsync") vsync_cb(void)
  */
 static int audio_frame_counter = 0;
 
-/* Encode mono NES samples into HDMI audio packets and push to DI queue.
- * Carries leftover samples (1-3) between calls to avoid cumulative loss.
- * Runs on Core 0. All called functions are in SRAM (__not_in_flash). */
+/* ─── HDMI audio: encode mono NES samples into Data Island packets ─── */
 static int16_t audio_carry[3];
 static int audio_carry_count = 0;
 
-static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int count)
+static void __not_in_flash("audio") hdmi_push_samples(const int16_t *buf, int count)
 {
-    /* Merge carry from previous call */
     int16_t merged[4];
     int pos = 0;
 
@@ -136,7 +134,6 @@ static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int c
             hstx_data_island_t island;
             hstx_encode_data_island(&island, &packet, false, true);
             if (!hstx_di_queue_push(&island)) {
-                /* Queue full — keep carry for next call */
                 return;
             }
             audio_frame_counter = new_fc;
@@ -144,7 +141,6 @@ static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int c
         audio_carry_count = 0;
     }
 
-    /* Push full packets */
     while (pos + 4 <= count) {
         audio_sample_t samples[4];
         for (int i = 0; i < 4; i++) {
@@ -156,18 +152,14 @@ static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int c
         hstx_data_island_t island;
         hstx_encode_data_island(&island, &packet, false, true);
         if (!hstx_di_queue_push(&island)) {
-            // Queue full: just drop the remainder of the packet (we could block, but that stalls NES)
-            // Save ONLY what fits, or avoid overrunning audio_carry!
             break;
         }
         audio_frame_counter = new_fc;
         pos += 4;
     }
 
-    /* Save leftover for next call */
     audio_carry_count = count - pos;
     if (audio_carry_count > 3) {
-        // We dropped packets due to full queue, clamp carry to avoid buffer overflow
         audio_carry_count = count % 4;
         pos = count - audio_carry_count;
     }
@@ -176,9 +168,8 @@ static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int c
     hstx_di_queue_update_silence(audio_frame_counter);
 }
 
-void audio_fill_silence(int count)
+static void hdmi_fill_silence(int count)
 {
-    int16_t silence[4] = {0};
     for (int i = 0; i < count / 4; i++) {
         audio_sample_t samples[4] = {0};
         hstx_packet_t packet;
@@ -187,6 +178,53 @@ void audio_fill_silence(int count)
         hstx_encode_data_island(&island, &packet, false, true);
         hstx_di_queue_push(&island);
     }
+}
+
+/* ─── Audio routing: HDMI or I2S based on settings ────────────────── */
+static bool i2s_initialized = false;
+
+static void ensure_i2s_initialized(void) {
+    if (!i2s_initialized) {
+        i2s_audio_init(I2S_DATA_PIN, I2S_CLOCK_PIN_BASE, SAMPLE_RATE);
+        i2s_initialized = true;
+    }
+}
+
+/* Apply volume: scale 16-bit samples by g_settings.volume (0-100) */
+static int16_t volume_buf[1024];
+
+static const int16_t *apply_volume(const int16_t *buf, int count) {
+    if (g_settings.volume >= 100) return buf;
+    if (count > 1024) count = 1024;
+    int vol = g_settings.volume;
+    for (int i = 0; i < count; i++)
+        volume_buf[i] = (int16_t)((buf[i] * vol) / 100);
+    return volume_buf;
+}
+
+static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int count)
+{
+    if (g_settings.audio_mode == AUDIO_MODE_DISABLED) {
+        hdmi_fill_silence(count);
+        return;
+    }
+    const int16_t *out = (g_settings.volume < 100) ? apply_volume(buf, count) : buf;
+    if (g_settings.audio_mode == AUDIO_MODE_I2S) {
+        ensure_i2s_initialized();
+        i2s_audio_push_samples(out, count);
+        hdmi_fill_silence(count);
+    } else {
+        hdmi_push_samples(out, count);
+    }
+}
+
+void audio_fill_silence(int count)
+{
+    if (g_settings.audio_mode == AUDIO_MODE_I2S) {
+        ensure_i2s_initialized();
+        i2s_audio_fill_silence(count);
+    }
+    hdmi_fill_silence(count);
 }
 
 /* Build RGB565 palette from QuickNES frame palette + color table */

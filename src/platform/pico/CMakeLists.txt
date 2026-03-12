@@ -78,9 +78,13 @@ add_executable(murmnes
     ${PICODIR}/settings.c
     ${DRIVERSDIR}/psram/psram_init.c
     ${DRIVERSDIR}/psram/psram_allocator.c
+    ${DRIVERSDIR}/i2s/i2s_audio.c
     ${QNES_SOURCES}
     ${EMU2413_SOURCES}
 )
+
+# Generate PIO header for I2S audio
+pico_generate_pio_header(murmnes ${DRIVERSDIR}/i2s/audio_i2s.pio)
 
 target_include_directories(murmnes PRIVATE
     ${PICODIR}
@@ -88,6 +92,8 @@ target_include_directories(murmnes PRIVATE
     ${EMU2413DIR}
     ${DRIVERSDIR}
     ${DRIVERSDIR}/psram
+    ${DRIVERSDIR}/i2s
+    ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 target_compile_definitions(murmnes PRIVATE
@@ -121,6 +127,7 @@ target_link_libraries(murmnes
     hardware_dma
     hardware_irq
     hardware_gpio
+    hardware_pio
     hardware_pll
     pico_hdmi
     sdcard

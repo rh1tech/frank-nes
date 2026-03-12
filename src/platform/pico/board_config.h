@@ -36,6 +36,10 @@
 #define NESPAD_LATCH_PIN 21
 #define NESPAD_DATA_PIN  26
 
+/* I2S Audio (optional external DAC) */
+#define I2S_DATA_PIN       9
+#define I2S_CLOCK_PIN_BASE 10
+
 /* PSRAM (auto-detect CS pin at runtime) */
 #define PSRAM_CS_PIN_RP2350B 47
 #define PSRAM_CS_PIN_RP2350A 8
