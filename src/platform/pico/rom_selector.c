@@ -12,6 +12,7 @@
 #include "ps2kbd_wrapper.h"
 #include "ff.h"
 #include "hardware/watchdog.h"
+#include "hardware/xip_cache.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -425,19 +426,23 @@ static void draw_cartridge(int selected) {
     /* ── Main body fill ── */
     fb_rect(CART_X, CART_Y, CART_W, CART_H, PAL_CART_BODY);
 
-    /* ── Corner cuts (top-left and top-right notches) ── */
+    /* ── Corner cuts ── */
+    /* Top: small 3x2 notches */
     fb_rect(CART_X, CART_Y, 3, 2, PAL_BG);
     fb_rect(CART_X + CART_W - 3, CART_Y, 3, 2, PAL_BG);
+    /* Bottom: large 9x15 grip notches */
+    fb_rect(CART_X, CART_Y + CART_H - 15, 9, 15, PAL_BG);
+    fb_rect(CART_X + CART_W - 9, CART_Y + CART_H - 15, 9, 15, PAL_BG);
 
     /* ── Outer edges ── */
     /* Top edge highlight */
     fb_hline(CART_X + 3, CART_Y, CART_W - 6, PAL_CART_LIGHT);
-    /* Left edge highlight */
-    fb_vline(CART_X, CART_Y + 2, CART_H - 2, PAL_CART_LIGHT);
-    /* Right edge shadow */
-    fb_vline(CART_X + CART_W - 1, CART_Y + 2, CART_H - 2, PAL_CART_DARK);
-    /* Bottom edge shadow */
-    fb_hline(CART_X, CART_Y + CART_H - 1, CART_W, PAL_CART_DARK);
+    /* Left edge highlight (stops above bottom notch) */
+    fb_vline(CART_X, CART_Y + 2, CART_H - 17, PAL_CART_LIGHT);
+    /* Right edge shadow (stops above bottom notch) */
+    fb_vline(CART_X + CART_W - 1, CART_Y + 2, CART_H - 17, PAL_CART_DARK);
+    /* Bottom edge shadow (between notches) */
+    fb_hline(CART_X + 9, CART_Y + CART_H - 1, CART_W - 18, PAL_CART_DARK);
 
     /* ── Left outer strip (narrow vertical bar) ── */
     fb_vline(CART_X + LSTRIP_W, CART_Y + 2, CART_H - BASE_H - 2, PAL_CART_DARK);
@@ -646,6 +651,13 @@ int rom_selector_preload(long *out_rom_size) {
     }
 
     f_unmount("");
+
+    /* Flush dirty cache lines to PSRAM so that data survives the
+     * xip_cache_invalidate_all() that main_pico.c calls before HDMI init.
+     * Without this, the last images/metadata written may still be dirty
+     * in the write-back XIP cache and get discarded by the invalidation. */
+    xip_cache_clean_all();
+
     return count;
 }
 
