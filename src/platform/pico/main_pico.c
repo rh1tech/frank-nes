@@ -672,7 +672,6 @@ static void real_main(void)
             if (qnes_load_rom_inplace(sd_rom_buf, rom_size) == 0) {
                 printf("Emulator initialized OK\n");
                 rom_loaded = true;
-                xip_cache_invalidate_all();
             }
         }
     }
