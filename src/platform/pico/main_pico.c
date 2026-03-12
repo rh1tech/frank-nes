@@ -32,6 +32,7 @@
 #include "ps2kbd_wrapper.h"
 #include "settings.h"
 #include "i2s_audio.h"
+#include "uart_logging.h"
 #include "ff.h"
 
 #if USB_HID_ENABLED
@@ -605,6 +606,8 @@ static void real_main(void)
 #endif
 
     stdio_init_all();
+    uart_logging_init();
+    uart_logging_register();
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 1);

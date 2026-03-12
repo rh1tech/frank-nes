@@ -76,6 +76,7 @@ set(EMU2413_SOURCES
 add_executable(murmnes
     ${PICODIR}/main_pico.c
     ${PICODIR}/settings.c
+    ${PICODIR}/uart_logging.c
     ${DRIVERSDIR}/psram/psram_init.c
     ${DRIVERSDIR}/psram/psram_allocator.c
     ${DRIVERSDIR}/i2s/i2s_audio.c
@@ -140,7 +141,8 @@ if(USB_HID_ENABLED)
     target_link_libraries(murmnes usbhid)
 endif()
 pico_enable_stdio_usb(murmnes 0)
-pico_enable_stdio_uart(murmnes 1)
+pico_enable_stdio_uart(murmnes 0)
+target_link_libraries(murmnes hardware_uart)
 
 # Optional: embed NES ROM into flash
 if(DEFINED NES_ROM_PATH)
