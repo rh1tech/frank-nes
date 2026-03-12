@@ -520,7 +520,7 @@ static void draw_cartridge(int selected) {
     fb_text_center(CART_Y + CART_H + 20, counter, PAL_GRAY);
 
     /* Nav hint */
-    fb_text_center(SCREEN_H - 14, "< LEFT/RIGHT >   A: START", PAL_GRAY);
+    fb_text_center(SCREEN_H - 16, "< LEFT/RIGHT >   A: START", PAL_GRAY);
 }
 
 /* ─── Input ───────────────────────────────────────────────────────── */
