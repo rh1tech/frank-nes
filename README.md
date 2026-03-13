@@ -301,7 +301,7 @@ Special thanks to:
 - Mitsutaka Okazaki for the EMU2413 OPLL emulator
 - fliperama86 for the pico_hdmi HSTX HDMI output library
 - shuichitakano for the original pico-infones Pico port and NES gamepad PIO driver
-- fhoedemakers for pico-infonesPlus SD card menu, game metadata
+- fhoedemakers for pico-infonesPlus and game metadata
 - The libretro team for maintaining the QuickNES fork
 - Nintendo for the original NES hardware
 - The Raspberry Pi Foundation for the RP2350 and Pico SDK
