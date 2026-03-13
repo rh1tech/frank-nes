@@ -69,8 +69,9 @@ public:
 	impl_t* impl;
 	enum { scanline_len = 341 };
 	
-protected:
+public:
 	uint8_t spr_ram [0x100];
+protected:
 	void begin_frame();
 	void run_hblank( int );
 	int sprite_height() const { return (w2000 >> 2 & 8) + 8; }

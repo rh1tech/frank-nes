@@ -382,9 +382,9 @@ void Nes_Ppu::dma_sprites( nes_time_t time, void const* in )
 {
 	//dprintf( "%d sprites written\n", time );
 	render_until( time );
-	
+
 	invalidate_sprite_max( time );
-	
+
 	memcpy( spr_ram + w2003, in, 0x100 - w2003 );
 	memcpy( spr_ram, (char*) in + 0x100 - w2003, w2003 );
 }

@@ -110,10 +110,42 @@ int __attribute__((section(".time_critical.qnes_emulate_frame"))) qnes_emulate_f
     if (err)
         return -1;
 
+    /* Count visible sprites for blink detection */
+    {
+        const uint8_t *oam = emu->oam_data();
+        int vis = 0;
+        for (int i = 0; i < 64; i++)
+            if (oam[i * 4] < 0xF0) vis++;
+        emu->visible_sprite_count = vis;
+    }
+
     /* Frame complete — swap buffers. Display now reads the just-finished
        frame while the emulator will write to the other buffer next time. */
     front_buf = back_buf;
     back_buf ^= 1;
+
+    /* Sprite blink persistence: when the visible sprite count drops
+       significantly between frames (30 Hz invincibility blink), merge
+       sprite pixels from the previous frame into the current one.  This
+       is only applied on blink-hide frames so moving sprites on normal
+       frames never leave trails.  Fixes HDMI display timing race where
+       the vsync phase can lock to the "hidden" blink frames. */
+    {
+        static int prev_sprite_count = 0;
+        int cur_count = emu->visible_sprite_count;
+
+        if (prev_sprite_count - cur_count >= 3) {
+            /* Blink-hide frame: copy sprite pixels from previous frame */
+            uint8_t *cur = pixel_bufs[front_buf];
+            const uint8_t *prev = pixel_bufs[back_buf];
+            for (int i = 0; i < PIXEL_BUF_SIZE; i++) {
+                if (!(cur[i] & 0x10) && (prev[i] & 0x10))
+                    cur[i] = prev[i];
+            }
+        }
+        prev_sprite_count = cur_count;
+    }
+
     emu->set_pixels(pixel_bufs[back_buf], 256 + 16);
     return 0;
 }

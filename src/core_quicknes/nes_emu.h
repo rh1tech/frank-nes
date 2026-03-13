@@ -233,6 +233,10 @@ private:
 	long timestamp() const { return emu.nes.frame_count; }
 	void set_timestamp( long t ) { emu.nes.frame_count = t; }
 
+public:
+	int visible_sprite_count; /* set after each frame for blink detection */
+	const uint8_t* oam_data() const { return emu.ppu.spr_ram; }
+
 private:
 	// noncopyable
 	Nes_Emu( const Nes_Emu& );

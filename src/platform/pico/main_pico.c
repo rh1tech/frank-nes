@@ -709,11 +709,7 @@ static void real_main(void)
     if (rom_loaded) {
         bool reset_requested = false;
         while (1) {
-            /* Wait for vsync — Core 1 applies pending frame during vblank.
-             * We wait for pending_pixels to become NULL to ensure we don't
-             * overwrite a buffer that is currently being displayed. If we
-             * skip this wait, 30 Hz damage flicker can collapse into a fully
-             * invisible sprite when every visible frame gets dropped. */
+            /* Wait for vsync — Core 1 applies pending frame during vblank. */
             while (pending_pixels != NULL) {
 #if USB_HID_ENABLED
                 usbhid_task();

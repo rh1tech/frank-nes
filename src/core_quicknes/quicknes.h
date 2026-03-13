@@ -37,6 +37,10 @@ int qnes_emulate_frame(int joypad1, int joypad2);
  * pitch: bytes per row (set by caller via qnes_set_pixels). */
 const uint8_t *qnes_get_pixels(void);
 
+/* Number of visible sprites (Y < 0xF0) in OAM after last frame.
+ * Used to detect 30 Hz sprite blink patterns. */
+int qnes_get_visible_sprite_count(void);
+
 /* Get the current frame's palette.
  * Each entry is a NES color index (0-511) into the color table.
  * out_size: number of palette entries this frame.

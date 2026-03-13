@@ -60,6 +60,7 @@ public:
 		current_scanline = 0;
 		multiplier_a = 0;
 		multiplier_b = 0;
+		memset( exram, 0, sizeof exram );
 		regs [0x00] = 2;
 		regs [0x01] = 3;
 		regs [0x14] = 0x7f;
@@ -150,6 +151,9 @@ public:
 			return (multiplier_a * multiplier_b) & 0xFF;
 		if ( addr == 0x5206 )
 			return (multiplier_a * multiplier_b) >> 8;
+		/* ExRAM: $5C00-$5FFF — readable in modes 0, 1, 2 */
+		if ( addr >= 0x5C00 && addr <= 0x5FFF )
+			return exram [addr - 0x5C00];
 		return -1;
 	}
 
@@ -157,6 +161,57 @@ public:
 	{
 		run_until( end_time );
 		start_frame();
+	}
+
+	/* Recalculate all CHR bank mappings based on current CHR mode ($5101).
+	 *
+	 * Sprite banks ($5120-$5127) and BG banks ($5128-$512B) are
+	 * mapped according to the bank size selected by the mode register:
+	 *   Mode 0: 8KB  — $5127 for sprites, $512B for BG
+	 *   Mode 1: 4KB  — $5123/$5127 for sprites, $512B for BG
+	 *   Mode 2: 2KB  — $5121/$5123/$5125/$5127 for sprites, $5129/$512B for BG
+	 *   Mode 3: 1KB  — $5120-$5127 for sprites, $5128-$512B for BG
+	 */
+	void update_chr_banks()
+	{
+		int mode = regs [0x01] & 3;
+
+		switch ( mode )
+		{
+		case 0: /* 8KB */
+			set_chr_bank( 0x0000, bank_8k, regs [0x27] );
+			set_chr_bank_bg( 0x0000, bank_8k, regs [0x2b] );
+			break;
+
+		case 1: /* 4KB */
+			set_chr_bank( 0x0000, bank_4k, regs [0x23] );
+			set_chr_bank( 0x1000, bank_4k, regs [0x27] );
+			set_chr_bank_bg( 0x0000, bank_4k, regs [0x2b] );
+			set_chr_bank_bg( 0x1000, bank_4k, regs [0x2b] );
+			break;
+
+		case 2: /* 2KB */
+			set_chr_bank( 0x0000, bank_2k, regs [0x21] );
+			set_chr_bank( 0x0800, bank_2k, regs [0x23] );
+			set_chr_bank( 0x1000, bank_2k, regs [0x25] );
+			set_chr_bank( 0x1800, bank_2k, regs [0x27] );
+			set_chr_bank_bg( 0x0000, bank_2k, regs [0x29] );
+			set_chr_bank_bg( 0x0800, bank_2k, regs [0x2b] );
+			set_chr_bank_bg( 0x1000, bank_2k, regs [0x29] );
+			set_chr_bank_bg( 0x1800, bank_2k, regs [0x2b] );
+			break;
+
+		case 3: /* 1KB */
+			for ( int i = 0; i < 4; i++ )
+				set_chr_bank( i * 0x400, bank_1k, regs [0x20 + i] );
+			for ( int i = 0; i < 4; i++ )
+				set_chr_bank( 0x1000 + i * 0x400, bank_1k, regs [0x24 + i] );
+			for ( int i = 0; i < 4; i++ ) {
+				set_chr_bank_bg( i * 0x400, bank_1k, regs [0x28 + i] );
+				set_chr_bank_bg( 0x1000 + i * 0x400, bank_1k, regs [0x28 + i] );
+			}
+			break;
+		}
 	}
 
 	virtual bool write_intercepted( nes_time_t time, nes_addr_t addr, int data )
@@ -167,6 +222,10 @@ public:
 			regs [reg] = data;
 			switch ( reg )
 			{
+			case 0x01: /* CHR mode — remap all CHR banks */
+				update_chr_banks();
+				break;
+
 			case 0x05:
 				mirror_manual( data & 3, data >> 2 & 3,
 						data >> 4 & 3, data >> 6 & 3 );
@@ -184,27 +243,10 @@ public:
 				set_prg_bank( 0xE000, bank_8k, data & 0x7f );
 				break;
 
-			case 0x20:
-			case 0x21:
-			case 0x22:
-			case 0x23:
-				set_chr_bank( (reg & 3) * 0x400, bank_1k, data );
-				break;
-
-			case 0x24:
-			case 0x25:
-			case 0x26:
-			case 0x27:
-				set_chr_bank( (reg & 3) * 0x400 + 0x1000, bank_1k, data );
-				break;
-
-			case 0x28:
-			case 0x29:
-			case 0x2a:
-			case 0x2b:
-				/* BG banks: mirror across both 4K halves */
-				set_chr_bank_bg( (reg & 3) * 0x400, bank_1k, data );
-				set_chr_bank_bg( (reg & 3) * 0x400 + 0x1000, bank_1k, data );
+			case 0x20: case 0x21: case 0x22: case 0x23:
+			case 0x24: case 0x25: case 0x26: case 0x27:
+			case 0x28: case 0x29: case 0x2a: case 0x2b:
+				update_chr_banks();
 				break;
 			}
 		}
@@ -230,6 +272,11 @@ public:
 		{
 			multiplier_b = data;
 		}
+		else if ( addr >= 0x5C00 && addr <= 0x5FFF )
+		{
+			/* ExRAM: writable in mode 2, cleared to 0 in mode 0/1 during rendering */
+			exram [addr - 0x5C00] = data;
+		}
 		else
 		{
 			return false;
@@ -240,18 +287,17 @@ public:
 
 	void apply_mapping()
 	{
-		static unsigned char list [] = {
-			0x05, 0x15, 0x16, 0x17,
-			0x20, 0x21, 0x22, 0x23,
-			0x24, 0x25, 0x26, 0x27,
-			0x28, 0x29, 0x2a, 0x2b
-		};
+		static unsigned char prg_list [] = { 0x05, 0x15, 0x16, 0x17 };
 
+		enable_sram();
 		enable_mmc5_chr_split();
-		for ( int i = 0; i < (int) sizeof list; i++ )
-			write_intercepted( 0, regs_addr + list [i], regs [list [i]] );
+		for ( int i = 0; i < (int) sizeof prg_list; i++ )
+			write_intercepted( 0, regs_addr + prg_list [i], regs [prg_list [i]] );
+		update_chr_banks();
 		intercept_writes( 0x5100, 0x200 );
+		intercept_writes( 0x5C00, 0x400 ); /* ExRAM writes */
 		intercept_reads( 0x5200, 0x100 );
+		intercept_reads( 0x5C00, 0x400 );  /* ExRAM reads */
 		start_frame();
 	}
 
@@ -263,4 +309,5 @@ public:
 	int current_scanline;
 	uint8_t multiplier_a;
 	uint8_t multiplier_b;
+	uint8_t exram [0x400]; /* 1KB ExRAM at $5C00-$5FFF */
 };
