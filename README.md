@@ -14,8 +14,8 @@ Based on [QuickNES](https://github.com/libretro/QuickNES_Core) by Shay Green (bl
 
 This firmware is designed for the **M2** board layout on RP2350-based boards with integrated HDMI, SD card, and PSRAM:
 
-- **[Murmulator](https://murmulator.ru)** -- A compact retro-computing platform based on RP Pico 2, designed for emulators and classic games.
-- **[FRANK](https://rh1.tech/projects/frank?area=about)** -- A versatile development board based on RP Pico 2 with HDMI output and extensive I/O options.
+- **[Murmulator](https://murmulator.ru)** – A compact retro-computing platform based on RP Pico 2, designed for emulators and classic games.
+- **[FRANK](https://rh1.tech/projects/frank?area=about)** – A versatile development board based on RP Pico 2 with HDMI output and extensive I/O options.
 
 Both boards provide all necessary peripherals out of the box (no additional wiring required).
 
@@ -41,7 +41,7 @@ Both boards provide all necessary peripherals out of the box (no additional wiri
 - **8MB QSPI PSRAM** (mandatory)
 - **HDMI connector** (directly connected via resistors, no HDMI encoder needed)
 - **SD card module** (SPI mode)
-- **NES or SNES gamepad** (directly connected) -- OR --
+- **NES or SNES gamepad** (directly connected) – OR –
 - **USB gamepad** (via native USB port)
 - **I2S DAC module** (e.g., TDA1387, PCM5102) for external audio output (optional)
 
@@ -52,8 +52,8 @@ Both boards provide all necessary peripherals out of the box (no additional wiri
 MurmNES requires 8MB PSRAM to run the ROM selector. Without PSRAM, only a single ROM embedded in flash or the first ROM on SD card can be loaded. You can obtain PSRAM-equipped hardware in several ways:
 
 1. **Solder a PSRAM chip** on top of the Flash chip on a Pico 2 clone (SOP-8 flash chips are only available on clones, not the original Pico 2)
-2. **Build a [Nyx 2](https://rh1.tech/projects/nyx?area=nyx2)** -- a DIY RP2350 board with integrated PSRAM
-3. **Purchase a [Pimoroni Pico Plus 2](https://shop.pimoroni.com/products/pimoroni-pico-plus-2?variant=42092668289107)** -- a ready-made Pico 2 with 8MB PSRAM
+2. **Build a [Nyx 2](https://rh1.tech/projects/nyx?area=nyx2)** – a DIY RP2350 board with integrated PSRAM
+3. **Purchase a [Pimoroni Pico Plus 2](https://shop.pimoroni.com/products/pimoroni-pico-plus-2?variant=42092668289107)** – a ready-made Pico 2 with 8MB PSRAM
 
 ## Pin Assignment (M2 Layout)
 
@@ -119,7 +119,7 @@ MurmNES requires 8MB PSRAM to run the ROM selector. Without PSRAM, only a single
 1. Format an SD card as **FAT32**
 2. Create a `nes` directory in the root
 3. Copy `.nes` ROM files into the `nes/` directory
-4. (Optional) Copy game metadata for cover art and game info -- extract `sdcard/metadata.zip` to your SD card's `nes/` directory
+4. (Optional) Copy game metadata for cover art and game info – extract `sdcard/metadata.zip` to your SD card's `nes/` directory
 5. Insert the SD card and power on the device
 
 ### First Boot and Caching
@@ -140,24 +140,24 @@ If no SD card is detected, an error message is shown for 5 seconds before fallin
 
 After the welcome screen, the ROM selector displays your game library as animated NES cartridges with cover art:
 
-- **Left / Right** -- Browse ROMs
-- **Up** -- Show game info panel (year, genre, players, description)
-- **Down** -- Hide game info panel
-- **A / Start** -- Load selected ROM and start playing
+- **Left / Right** – Browse ROMs
+- **Up** – Show game info panel (year, genre, players, description)
+- **Down** – Hide game info panel
+- **A / Start** – Load selected ROM and start playing
 
 The last selected ROM is remembered across reboots.
 
 ### During Gameplay
 
-- **Select + Start** (gamepad), **F12** or **ESC** (keyboard) -- Open settings menu
+- **Select + Start** (gamepad), **F12** or **ESC** (keyboard) – Open settings menu
 
 ### Game Metadata
 
 For cover art and game info in the ROM selector, place metadata files on the SD card:
 
 ```
-nes/metadata/Images/160/{X}/{CRC32}.555   -- Cover art (RGB555 format)
-nes/metadata/descr/{X}/{CRC32}.txt        -- Game info (XML format)
+nes/metadata/Images/160/{X}/{CRC32}.555   – Cover art (RGB555 format)
+nes/metadata/descr/{X}/{CRC32}.txt        – Game info (XML format)
 ```
 
 Where `{X}` is the first hex digit of the CRC32, and `{CRC32}` is the 8-digit uppercase hex checksum (computed from the ROM data after the 16-byte iNES header).
@@ -212,7 +212,7 @@ Press **Select + Start** during gameplay (or **F12** / **ESC** on keyboard) to o
 | Player 1      | Any, NES Pad 1, NES Pad 2, USB 1, USB 2, Keyboard |
 | Player 2      | NES Pad 1, NES Pad 2, USB 1, USB 2, Keyboard, Disabled |
 | Audio         | HDMI, I2S, Disabled                               |
-| Volume        | 0% -- 100% (10% steps)                            |
+| Volume        | 0% – 100% (10% steps)                            |
 | Save Game     | Save state to SD card                             |
 | Load Game     | Load state from SD card                           |
 | Back to ROM Selector | Return to ROM browser (resets emulator)    |
@@ -269,7 +269,7 @@ Make sure the metadata files are in the correct directory structure on the SD ca
 
 ### First boot is very slow
 
-This is normal -- CRC32 checksums are being computed for all ROMs. Subsequent boots will be fast thanks to the cache file. Reduce the number of ROMs if boot time is unacceptable.
+This is normal – CRC32 checksums are being computed for all ROMs. Subsequent boots will be fast thanks to the cache file. Reduce the number of ROMs if boot time is unacceptable.
 
 ## License
 
