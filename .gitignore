@@ -6,3 +6,4 @@ deps/
 *.d
 .DS_Store
 roms/
+release/
