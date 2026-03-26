@@ -49,7 +49,7 @@ Both boards provide all necessary peripherals out of the box (no additional wiri
 
 ### PSRAM
 
-MurmNES requires 8MB PSRAM to run the ROM selector. Without PSRAM, only a single ROM embedded in flash or the first ROM on SD card can be loaded. You can obtain PSRAM-equipped hardware in several ways:
+FRANK NES requires 8MB PSRAM to run the ROM selector. Without PSRAM, only a single ROM embedded in flash or the first ROM on SD card can be loaded. You can obtain PSRAM-equipped hardware in several ways:
 
 1. **Solder a PSRAM chip** on top of the Flash chip on a Pico 2 clone (SOP-8 flash chips are only available on clones, not the original Pico 2)
 2. **Build a [Nyx 2](https://rh1.tech/projects/nyx?area=nyx2)** – a DIY RP2350 board with integrated PSRAM
@@ -124,7 +124,7 @@ MurmNES requires 8MB PSRAM to run the ROM selector. Without PSRAM, only a single
 
 ### First Boot and Caching
 
-On the **first boot**, MurmNES scans all ROM files in `nes` and computes a CRC32 checksum for each one. This is used to look up cover art and game metadata. **This process can be slow if you have many ROMs** - a few seconds per file depending on size.
+On the **first boot**, FRANK NES scans all ROM files in `nes` and computes a CRC32 checksum for each one. This is used to look up cover art and game metadata. **This process can be slow if you have many ROMs** - a few seconds per file depending on size.
 
 The checksums are cached in `nes/.crc_cache` so subsequent boots are fast. The cache is automatically updated when new ROMs are added.
 
@@ -132,7 +132,7 @@ The checksums are cached in `nes/.crc_cache` so subsequent boots are fast. The c
 
 ### Welcome Screen
 
-On boot, a welcome screen is displayed with the MurmNES logo, version, and author information. Press **A** or **Start** to continue (or wait 10 seconds for auto-continue).
+On boot, a welcome screen is displayed with the FRANK NES logo, version, and author information. Press **A** or **Start** to continue (or wait 10 seconds for auto-continue).
 
 If no SD card is detected, an error message is shown for 5 seconds before falling back to any ROM embedded in flash.
 
@@ -231,12 +231,12 @@ Settings are saved to `nes/.settings` and persist across reboots. Save states ar
 ### Build
 
 ```bash
-git clone https://github.com/rh1tech/murmnes.git
-cd murmnes
+git clone https://github.com/rh1tech/frank-nes.git
+cd frank-nes
 ./build.sh
 ```
 
-The build script compiles the firmware with USB HID support enabled by default. Output: `build/murmnes.uf2`
+The build script compiles the firmware with USB HID support enabled by default. Output: `build/frank-nes.uf2`
 
 ### Build Options
 
@@ -254,7 +254,7 @@ NES_ROM=path/to/game.nes ./build.sh
 ./flash.sh
 
 # Or manually:
-picotool load build/murmnes.uf2
+picotool load build/frank-nes.uf2
 ```
 
 ## Troubleshooting
@@ -311,4 +311,4 @@ Special thanks to:
 
 Mikhail Matveev <<xtreme@rh1.tech>>
 
-[https://rh1.tech](https://rh1.tech) | [GitHub](https://github.com/rh1tech/murmnes)
+[https://rh1.tech](https://rh1.tech) | [GitHub](https://github.com/rh1tech/frank-nes)
