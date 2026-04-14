@@ -301,9 +301,13 @@ static bool try_init_psram(void)
     static const uint cs_pins[] = { PSRAM_CS_PIN_RP2350B, PSRAM_CS_PIN_RP2350A };
     for (int i = 0; i < 2; i++) {
         psram_init(cs_pins[i]);
-        /* Write/read test */
+        /* Write/read test — flush and invalidate cache so the read
+         * actually goes to PSRAM instead of returning the cached write. */
         PSRAM_BASE[0] = 0xA5;
         PSRAM_BASE[1] = 0x5A;
+        __compiler_memory_barrier();
+        xip_cache_clean_all();
+        xip_cache_invalidate_all();
         __compiler_memory_barrier();
         if (PSRAM_BASE[0] == 0xA5 && PSRAM_BASE[1] == 0x5A) {
             printf("PSRAM detected on CS pin %u\n", cs_pins[i]);
@@ -585,9 +589,6 @@ static void real_main(void)
 
     /* Provide PSRAM for tile cache (large CHR ROMs need ~256KB+) */
     if (psram_available) {
-        /* Tile cache in PSRAM via UNCACHED alias (0x15xxxxxx).
-         * Uncached access bypasses XIP cache, preventing cache pollution
-         * that disrupts HSTX DMA when writing tile data during HDMI output. */
         void *tc = (void *)(0x15000000 + 2 * 1024 * 1024);
         qnes_set_tile_cache_buf(tc, 1 * 1024 * 1024);
     }

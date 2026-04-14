@@ -285,7 +285,7 @@ typedef struct {
     bool crc_valid;
 } rom_entry_t;
 
-/* Placed in PSRAM at 4MB offset (after images at 3MB) */
+/* Placed in PSRAM at 4MB offset (after ROM data + tile cache) */
 #define ROMLIST_PSRAM_BASE (0x11000000 + 4 * 1024 * 1024)
 static rom_entry_t *rom_list;  /* -> PSRAM */
 static int rom_count = 0;
@@ -306,6 +306,7 @@ static int scan_roms(void) {
             (fno.fname[len-1] != 's' && fno.fname[len-1] != 'S'))
             continue;
         strncpy(rom_list[rom_count].filename, fno.fname, sizeof(rom_list[0].filename) - 1);
+        rom_list[rom_count].filename[sizeof(rom_list[0].filename) - 1] = '\0';
         rom_list[rom_count].crc_valid = false;
         rom_count++;
     }
@@ -473,7 +474,6 @@ static void load_rom_title(int idx) {
     snprintf(path, sizeof(path), "/nes/metadata/descr/%c/%08lX.txt", hex_char, (unsigned long)crc);
     FIL fil;
     if (f_open(&fil, path, FA_READ) == FR_OK) {
-        /* Read enough for all fields — metadata files are typically 0.5-1.5KB */
         char buf[1536];
         UINT br;
         if (f_read(&fil, buf, sizeof(buf) - 1, &br) == FR_OK) {
@@ -483,7 +483,6 @@ static void load_rom_title(int idx) {
             extract_xml_tag(buf, "genre", rom_meta[idx].genre, sizeof(rom_meta[idx].genre));
             extract_xml_tag(buf, "players", rom_meta[idx].players, sizeof(rom_meta[idx].players));
 
-            /* Extract year from releasedate (format: YYYYMMDDTHHMMSS) */
             char datestr[32];
             extract_xml_tag(buf, "releasedate", datestr, sizeof(datestr));
             if (datestr[0] && strlen(datestr) >= 4) {
@@ -994,26 +993,16 @@ int rom_selector_preload(long *out_rom_size) {
 
     int count = scan_roms();
     printf("ROM selector: found %d ROMs\n", count);
-    if (count > 0) {
-        printf("  [0] = '%s'\n", rom_list[0].filename);
-        if (count > 1) printf("  [1] = '%s'\n", rom_list[1].filename);
-    }
     if (count == 0) { f_unmount(""); return 0; }
 
     /* Load CRC cache from SD — avoids recomputing on every boot */
     load_crc_cache();
 
-    /* Compute CRCs incrementally — limit per boot to avoid stalling
-     * when hundreds of new ROMs are added at once.  The cache file
-     * accumulates across boots so all ROMs eventually get CRCs. */
-    #define CRC_BATCH_SIZE 16
+    /* Compute CRCs for any ROMs not found in the cache */
     bool cache_dirty = false;
-    int crc_computed = 0;
     for (int i = 0; i < rom_count; i++) {
         if (!rom_list[i].crc_valid) {
-            if (crc_computed >= CRC_BATCH_SIZE) break;
             ensure_crc(i);
-            crc_computed++;
             cache_dirty = true;
         }
     }
@@ -1167,7 +1156,9 @@ bool rom_selector_show(long *out_rom_size) {
             /* Wait for any scroll to finish too */
             if (scroll_dir != 0) continue;
 
-            /* Load ROM from SD into PSRAM on demand */
+            /* Load ROM from SD into PSRAM on demand.
+             * Read into SRAM buffer, then memcpy to PSRAM (cached alias)
+             * and flush the specific range so data reaches physical PSRAM. */
             long loaded_size = 0;
             if (sd_ok) {
                 char rpath[ROM_PATH_MAX];

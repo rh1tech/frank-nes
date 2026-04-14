@@ -22,9 +22,9 @@ if [ -n "$VIDEO_MODE" ]; then
     CMAKE_OPTS="$CMAKE_OPTS -DVIDEO_MODE=$VIDEO_MODE"
 fi
 
-# USB HID host mode (enabled by default — UART used for logging)
-# Usage: USB_HID=0 ./build.sh  to disable
-if [ "${USB_HID:-1}" != "0" ]; then
+# USB HID host mode (disabled by default for USB serial logging)
+# Usage: USB_HID=1 ./build.sh  to enable (release builds use release.sh)
+if [ "${USB_HID:-0}" = "1" ]; then
     CMAKE_OPTS="$CMAKE_OPTS -DUSB_HID_ENABLED=ON"
 else
     CMAKE_OPTS="$CMAKE_OPTS -DUSB_HID_ENABLED=OFF"
