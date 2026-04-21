@@ -30,6 +30,7 @@ extern "C" {
 #define NES_KEY_PGDN   0x0D
 #define NES_KEY_HOME   0x0E
 #define NES_KEY_END    0x0F
+#define NES_KEY_F3     0x10
 
 // Keyboard state bits for ps2kbd_get_state()
 #define KBD_STATE_UP     (1 << 0)
@@ -47,11 +48,13 @@ extern "C" {
 #define KBD_STATE_PGDN   (1 << 12)
 #define KBD_STATE_HOME   (1 << 13)
 #define KBD_STATE_END    (1 << 14)
+#define KBD_STATE_F3     (1 << 15)
 
 void ps2kbd_init(void);
 void ps2kbd_tick(void);
 int ps2kbd_get_key(int* pressed, unsigned char* key);
 uint16_t ps2kbd_get_state(void);
+int ps2kbd_get_raw_char(void);
 
 #ifdef __cplusplus
 }

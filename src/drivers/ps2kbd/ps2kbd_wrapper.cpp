@@ -45,6 +45,41 @@ static bool queue_pop(uint8_t* pressed, uint8_t* key) {
     return true;
 }
 
+// Raw character ring buffer for text input (search dialog)
+#define RAW_CHAR_QUEUE_SIZE 16
+static uint8_t raw_char_queue[RAW_CHAR_QUEUE_SIZE];
+static volatile uint8_t raw_char_head = 0;
+static volatile uint8_t raw_char_tail = 0;
+
+static void raw_char_push(uint8_t ch) {
+    uint8_t next = (raw_char_head + 1) & (RAW_CHAR_QUEUE_SIZE - 1);
+    if (next != raw_char_tail) {
+        raw_char_queue[raw_char_head] = ch;
+        raw_char_head = next;
+    }
+}
+
+static int raw_char_pop(void) {
+    if (raw_char_head == raw_char_tail) return -1;
+    uint8_t ch = raw_char_queue[raw_char_tail];
+    raw_char_tail = (raw_char_tail + 1) & (RAW_CHAR_QUEUE_SIZE - 1);
+    return ch;
+}
+
+static uint8_t hid_to_ascii(uint8_t code, uint8_t modifier) {
+    bool shift = (modifier & 0x22) != 0;
+    if (code >= 0x04 && code <= 0x1D) {
+        return shift ? ('A' + (code - 0x04)) : ('a' + (code - 0x04));
+    }
+    if (code >= 0x1E && code <= 0x26) {
+        return '1' + (code - 0x1E);
+    }
+    if (code == 0x27) return '0';
+    if (code == 0x2C) return ' ';
+    if (code == 0x2A) return '\b';
+    return 0;
+}
+
 // HID to NES key mapping
 // Key mapping:
 //   Arrow keys -> D-pad (Up/Down/Left/Right)
@@ -74,6 +109,9 @@ static unsigned char hid_to_nes(uint8_t code) {
 
         // ESC = Settings menu / Back
         case 0x29: return NES_KEY_ESC;    // Escape
+
+        // F3 = Search
+        case 0x3C: return NES_KEY_F3;     // F3
 
         // F11 = File browser
         case 0x44: return NES_KEY_F11;    // F11
@@ -105,6 +143,8 @@ static void key_handler(hid_keyboard_report_t *curr, hid_keyboard_report_t *prev
             if (!found) {
                 unsigned char k = hid_to_nes(curr->keycode[i]);
                 if (k) queue_push(1, k);
+                uint8_t ch = hid_to_ascii(curr->keycode[i], curr->modifier);
+                if (ch) raw_char_push(ch);
             }
         }
     }
@@ -147,6 +187,7 @@ static uint16_t key_to_state_bit(uint8_t key) {
         case NES_KEY_PGDN:   return KBD_STATE_PGDN;
         case NES_KEY_HOME:   return KBD_STATE_HOME;
         case NES_KEY_END:    return KBD_STATE_END;
+        case NES_KEY_F3:     return KBD_STATE_F3;
         default: return 0;
     }
 }
@@ -181,4 +222,8 @@ extern "C" int ps2kbd_get_key(int* pressed, unsigned char* key) {
 
 extern "C" uint16_t ps2kbd_get_state(void) {
     return g_kbd_state;
+}
+
+extern "C" int ps2kbd_get_raw_char(void) {
+    return raw_char_pop();
 }

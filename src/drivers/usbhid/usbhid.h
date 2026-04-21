@@ -101,6 +101,12 @@ int usbhid_get_key_action(uint8_t *keycode, int *down);
 uint16_t usbhid_get_kbd_state(void);
 
 /**
+ * Get next raw ASCII character from keyboard input queue.
+ * @return ASCII char (a-z, A-Z, 0-9, space, backspace), or -1 if empty
+ */
+int usbhid_get_raw_char(void);
+
+/**
  * Check if a USB gamepad is connected (any slot)
  * @return Non-zero if at least one gamepad connected
  */

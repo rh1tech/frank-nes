@@ -857,7 +857,7 @@ static void draw_selector_text(int selected) {
     if (info_state == INFO_SHOWN)
         fb_text_center(SCREEN_H - 16, "< DOWN >   A: START", PAL_GRAY);
     else if (info_state == INFO_HIDDEN)
-        fb_text_center(SCREEN_H - 16, "< LEFT/RIGHT/UP/F11 >  A: START", PAL_GRAY);
+        fb_text_center(SCREEN_H - 16, "< L/R/UP/F11/F3 >  A:START", PAL_GRAY);
 }
 
 /* ─── Animation ───────────────────────────────────────────────────── */
@@ -931,6 +931,7 @@ static void draw_scene(int selected, int bounce_idx) {
 #define BTN_HOME   0x800
 #define BTN_END    0x1000
 #define BTN_ESC    0x2000
+#define BTN_F3     0x4000
 
 static int read_selector_buttons(void) {
     nespad_read();
@@ -963,6 +964,7 @@ static int read_selector_buttons(void) {
     if (kbd & KBD_STATE_HOME)   buttons |= BTN_HOME;
     if (kbd & KBD_STATE_END)    buttons |= BTN_END;
     if (kbd & KBD_STATE_ESC)    buttons |= BTN_ESC;
+    if (kbd & KBD_STATE_F3)     buttons |= BTN_F3;
 #ifdef USB_HID_ENABLED
     if (usbhid_gamepad_connected()) {
         usbhid_gamepad_state_t gp;
@@ -1375,6 +1377,310 @@ static bool file_browser_show(long *out_rom_size) {
     return false;
 }
 
+/* ─── Search dialog ──────────────────────────────────────────────── */
+
+#define SEARCH_MAX_QUERY   16
+#define SEARCH_MAX_RESULTS  5
+#define SEARCH_RESULT_NONE -1
+
+/* On-screen keyboard layout: 4 rows */
+static const char *osk_rows[] = {
+    "0123456789",
+    "ABCDEFGHIJ",
+    "KLMNOPQRST",
+    "UVWXYZ <--",
+};
+#define OSK_ROWS      4
+#define OSK_CELL_W   14
+#define OSK_CELL_H   14
+#define OSK_PAD_X    ((SCREEN_W - 10 * OSK_CELL_W) / 2)
+#define OSK_PAD_Y    34
+
+static bool osk_is_backspace(int row, int col) {
+    return row == 3 && col >= 7;
+}
+
+static bool osk_is_space(int row, int col) {
+    return row == 3 && col == 6;
+}
+
+static bool str_contains_ci(const char *haystack, const char *needle) {
+    if (!needle[0]) return true;
+    int nlen = (int)strlen(needle);
+    int hlen = (int)strlen(haystack);
+    for (int i = 0; i <= hlen - nlen; i++) {
+        bool match = true;
+        for (int j = 0; j < nlen; j++) {
+            char hc = haystack[i + j];
+            char nc = needle[j];
+            if (hc >= 'a' && hc <= 'z') hc -= 32;
+            if (nc >= 'a' && nc <= 'z') nc -= 32;
+            if (hc != nc) { match = false; break; }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+static void search_find_results(const char *query, int *results, int *result_count) {
+    *result_count = 0;
+    if (!query[0]) return;
+    for (int i = 0; i < rom_count && *result_count < SEARCH_MAX_RESULTS; i++) {
+        const char *title = rom_meta[i].title[0] ? rom_meta[i].title : rom_list[i].filename;
+        if (str_contains_ci(title, query))
+            results[(*result_count)++] = i;
+    }
+}
+
+/* Overscan-safe margins */
+#define SAFE_X 10
+#define SAFE_Y 10
+#define SAFE_W (SCREEN_W - 2 * SAFE_X)
+
+static void draw_search_screen(const char *query, int osk_row, int osk_col,
+                                int *results, int result_count, int result_sel,
+                                bool in_results) {
+    fb_fill(PAL_BG);
+
+    /* Title */
+    fb_text_center(SAFE_Y, "SEARCH", PAL_WHITE);
+    fb_hline(SAFE_X, SAFE_Y + 10, SAFE_W, PAL_GRAY);
+
+    /* Query display */
+    int qx = OSK_PAD_X;
+    int qy = SAFE_Y + 15;
+    int qw = 10 * OSK_CELL_W;
+    fb_rect(qx - 1, qy - 1, qw + 2, 11, PAL_BLACK);
+    fb_hline(qx - 1, qy - 1, qw + 2, PAL_GRAY);
+    fb_hline(qx - 1, qy + 9, qw + 2, PAL_GRAY);
+    fb_vline(qx - 1, qy - 1, 11, PAL_GRAY);
+    fb_vline(qx + qw, qy - 1, 11, PAL_GRAY);
+    if (query[0])
+        fb_text(qx + 2, qy + 1, query, PAL_WHITE);
+
+    /* On-screen keyboard — only draw border on selected cell */
+    int osk_y0 = qy + 14;
+    for (int r = 0; r < OSK_ROWS; r++) {
+        const char *row_str = osk_rows[r];
+        int row_len = (int)strlen(row_str);
+        for (int c = 0; c < row_len; c++) {
+            int cx = OSK_PAD_X + c * OSK_CELL_W;
+            int cy = osk_y0 + r * OSK_CELL_H;
+
+            /* Backspace spans 3 cells visually */
+            if (osk_is_backspace(r, c)) {
+                if (c == 7) {
+                    int bx = cx;
+                    int bw = 3 * OSK_CELL_W;
+                    bool bs_sel = !in_results && (r == osk_row && osk_col >= 7);
+                    if (bs_sel) {
+                        fb_hline(bx, cy + 1, bw - 1, PAL_WHITE);
+                        fb_hline(bx, cy + OSK_CELL_H - 1, bw - 1, PAL_WHITE);
+                        fb_vline(bx, cy + 1, OSK_CELL_H - 1, PAL_WHITE);
+                        fb_vline(bx + bw - 2, cy + 1, OSK_CELL_H - 1, PAL_WHITE);
+                    }
+                    fb_text(bx + (bw - 3 * 6) / 2, cy + 4, "DEL",
+                            bs_sel ? PAL_WHITE : PAL_GRAY);
+                }
+                continue;
+            }
+
+            bool selected = !in_results && (r == osk_row && c == osk_col);
+
+            /* Space key */
+            if (osk_is_space(r, c)) {
+                if (selected) {
+                    fb_hline(cx, cy + 1, OSK_CELL_W - 1, PAL_WHITE);
+                    fb_hline(cx, cy + OSK_CELL_H - 1, OSK_CELL_W - 1, PAL_WHITE);
+                    fb_vline(cx, cy + 1, OSK_CELL_H - 1, PAL_WHITE);
+                    fb_vline(cx + OSK_CELL_W - 2, cy + 1, OSK_CELL_H - 1, PAL_WHITE);
+                }
+                fb_char(cx + (OSK_CELL_W - 5) / 2, cy + 4, '_',
+                        selected ? PAL_WHITE : PAL_GRAY);
+                continue;
+            }
+
+            if (selected) {
+                fb_hline(cx, cy + 1, OSK_CELL_W - 1, PAL_WHITE);
+                fb_hline(cx, cy + OSK_CELL_H - 1, OSK_CELL_W - 1, PAL_WHITE);
+                fb_vline(cx, cy + 1, OSK_CELL_H - 1, PAL_WHITE);
+                fb_vline(cx + OSK_CELL_W - 2, cy + 1, OSK_CELL_H - 1, PAL_WHITE);
+            }
+
+            fb_char(cx + (OSK_CELL_W - 5) / 2, cy + 4, row_str[c],
+                    selected ? PAL_WHITE : PAL_GRAY);
+        }
+    }
+
+    /* Separator */
+    int sep_y = osk_y0 + OSK_ROWS * OSK_CELL_H + 4;
+    fb_hline(SAFE_X, sep_y, SAFE_W, PAL_GRAY);
+
+    /* Results */
+    int max_result_chars = (SAFE_W - 4) / 6;
+    int ry = sep_y + 4;
+    if (result_count == 0 && query[0]) {
+        fb_text_center(ry + 10, "NO RESULTS", PAL_GRAY);
+    } else {
+        for (int i = 0; i < result_count; i++) {
+            int idx = results[i];
+            const char *title = rom_meta[idx].title[0] ? rom_meta[idx].title : rom_list[idx].filename;
+            bool rsel = in_results && (i == result_sel);
+            if (rsel)
+                fb_rect(SAFE_X, ry - 1, SAFE_W, 11, PAL_CART_DARK);
+            fb_text_trunc(SAFE_X + 2, ry, title, rsel ? PAL_WHITE : PAL_GRAY, max_result_chars);
+            ry += 12;
+        }
+    }
+
+    /* Footer */
+    int foot_y = SCREEN_H - SAFE_Y - 10;
+    fb_hline(SAFE_X, foot_y, SAFE_W, PAL_GRAY);
+    fb_text_center(foot_y + 3, "A:SEL  B/ESC:BACK  DOWN:RESULTS", PAL_GRAY);
+}
+
+static int search_dialog_show(void) {
+    char query[SEARCH_MAX_QUERY + 1];
+    query[0] = '\0';
+    int qlen = 0;
+
+    int osk_row = 1, osk_col = 0;
+    int results[SEARCH_MAX_RESULTS];
+    int result_count = 0;
+    int result_sel = 0;
+    bool in_results = false;
+
+    int prev_buttons = read_selector_buttons();
+    uint32_t hold_counter = 0;
+
+    while (1) {
+        selector_wait_vsync();
+
+        draw_search_screen(query, osk_row, osk_col, results, result_count,
+                           result_sel, in_results);
+
+        uint8_t *tmp = fb;
+        fb = fb_show;
+        fb_show = tmp;
+        audio_fill_silence(SAMPLE_RATE / 60);
+        pending_pitch = SCREEN_W;
+        pending_pixels = fb_show;
+
+        /* Consume raw keyboard chars */
+        int raw;
+        while ((raw = ps2kbd_get_raw_char()) >= 0) {
+            if (raw == '\b') {
+                if (qlen > 0) query[--qlen] = '\0';
+            } else if (raw == ' ' || (raw >= '0' && raw <= '9') ||
+                       (raw >= 'a' && raw <= 'z') || (raw >= 'A' && raw <= 'Z')) {
+                if (qlen < SEARCH_MAX_QUERY) {
+                    char c = (char)raw;
+                    if (c >= 'a' && c <= 'z') c -= 32;
+                    query[qlen++] = c;
+                    query[qlen] = '\0';
+                }
+            }
+            search_find_results(query, results, &result_count);
+            result_sel = 0;
+            in_results = false;
+        }
+#ifdef USB_HID_ENABLED
+        while ((raw = usbhid_get_raw_char()) >= 0) {
+            if (raw == '\b') {
+                if (qlen > 0) query[--qlen] = '\0';
+            } else if (raw == ' ' || (raw >= '0' && raw <= '9') ||
+                       (raw >= 'a' && raw <= 'z') || (raw >= 'A' && raw <= 'Z')) {
+                if (qlen < SEARCH_MAX_QUERY) {
+                    char c = (char)raw;
+                    if (c >= 'a' && c <= 'z') c -= 32;
+                    query[qlen++] = c;
+                    query[qlen] = '\0';
+                }
+            }
+            search_find_results(query, results, &result_count);
+            result_sel = 0;
+            in_results = false;
+        }
+#endif
+
+        int buttons = read_selector_buttons();
+        int pressed = buttons & ~prev_buttons;
+        if (buttons != 0 && buttons == prev_buttons) {
+            hold_counter++;
+            if (hold_counter > 20 && (hold_counter % 3) == 0)
+                pressed = buttons & (BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT);
+        } else {
+            hold_counter = 0;
+        }
+        prev_buttons = buttons;
+
+        /* B or ESC: exit search */
+        if (pressed & (BTN_B | BTN_ESC))
+            return SEARCH_RESULT_NONE;
+
+        if (in_results) {
+            if (pressed & BTN_UP) {
+                if (result_sel > 0) {
+                    result_sel--;
+                } else {
+                    in_results = false;
+                }
+            }
+            if (pressed & BTN_DOWN) {
+                if (result_sel < result_count - 1)
+                    result_sel++;
+            }
+            if (pressed & (BTN_A | BTN_START)) {
+                if (result_count > 0)
+                    return results[result_sel];
+            }
+        } else {
+            /* OSK navigation */
+            if (pressed & BTN_UP) {
+                if (osk_row > 0) osk_row--;
+            }
+            if (pressed & BTN_DOWN) {
+                if (osk_row < OSK_ROWS - 1) {
+                    osk_row++;
+                } else if (result_count > 0) {
+                    in_results = true;
+                    result_sel = 0;
+                }
+            }
+            if (pressed & BTN_LEFT) {
+                if (osk_col > 0) osk_col--;
+            }
+            if (pressed & BTN_RIGHT) {
+                int row_len = (int)strlen(osk_rows[osk_row]);
+                if (osk_col < row_len - 1) osk_col++;
+            }
+
+            /* Clamp col to row length */
+            int row_len = (int)strlen(osk_rows[osk_row]);
+            if (osk_col >= row_len) osk_col = row_len - 1;
+
+            if (pressed & (BTN_A | BTN_START)) {
+                if (osk_is_backspace(osk_row, osk_col)) {
+                    if (qlen > 0) query[--qlen] = '\0';
+                } else if (osk_is_space(osk_row, osk_col)) {
+                    if (qlen < SEARCH_MAX_QUERY) {
+                        query[qlen++] = ' ';
+                        query[qlen] = '\0';
+                    }
+                } else {
+                    char ch = osk_rows[osk_row][osk_col];
+                    if (qlen < SEARCH_MAX_QUERY) {
+                        query[qlen++] = ch;
+                        query[qlen] = '\0';
+                    }
+                }
+                search_find_results(query, results, &result_count);
+                result_sel = 0;
+            }
+        }
+    }
+}
+
 /* ─── Show: images loaded from SD on-the-fly ──────────────────────── */
 
 bool rom_selector_show(long *out_rom_size) {
@@ -1465,6 +1771,26 @@ bool rom_selector_show(long *out_rom_size) {
             cur_img_idx = -1;
             if (sd_ok) load_rom_image(selected);
             prev_buttons = read_selector_buttons();
+            continue;
+        }
+
+        /* F3 or Select+A: open search dialog */
+        bool sel_a = ((pressed & BTN_SELECT) && (buttons & BTN_A))
+                  || ((pressed & BTN_A) && (buttons & BTN_SELECT));
+        if ((pressed & BTN_F3) || sel_a) {
+            int found = search_dialog_show();
+            if (found >= 0 && found < rom_count) {
+                selected = found;
+                if (sd_ok) load_rom_image(selected);
+            }
+            setup_selector_palette();
+            cur_img_idx = -1;
+            if (sd_ok) load_rom_image(selected);
+            prev_buttons = read_selector_buttons();
+            info_state = INFO_HIDDEN;
+            info_anim_frame = 0;
+            scroll_dir = 0;
+            scroll_frame = 0;
             continue;
         }
 
