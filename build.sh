@@ -22,12 +22,28 @@ if [ -n "$VIDEO_MODE" ]; then
     CMAKE_OPTS="$CMAKE_OPTS -DVIDEO_MODE=$VIDEO_MODE"
 fi
 
+# Optional: composite TV output instead of HDMI
+# Usage: VIDEO_COMPOSITE=1 ./build.sh
+if [ "${VIDEO_COMPOSITE:-0}" = "1" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DVIDEO_COMPOSITE=ON"
+fi
+
 # USB HID host mode (disabled by default for USB serial logging)
 # Usage: USB_HID=1 ./build.sh  to enable (release builds use release.sh)
 if [ "${USB_HID:-0}" = "1" ]; then
     CMAKE_OPTS="$CMAKE_OPTS -DUSB_HID_ENABLED=ON"
 else
     CMAKE_OPTS="$CMAKE_OPTS -DUSB_HID_ENABLED=OFF"
+fi
+
+# Clean build dir if video output mode changed (CMake caches the option)
+if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    CACHED=$(grep -s 'VIDEO_COMPOSITE:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
+    WANTED="OFF"
+    [ "${VIDEO_COMPOSITE:-0}" = "1" ] && WANTED="ON"
+    if [ "$CACHED" != "$WANTED" ]; then
+        rm -rf "$BUILD_DIR"
+    fi
 fi
 
 mkdir -p "$BUILD_DIR"

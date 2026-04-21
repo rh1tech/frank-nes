@@ -40,6 +40,9 @@
 #define I2S_DATA_PIN       9
 #define I2S_CLOCK_PIN_BASE 10
 
+/* Composite TV output (optional, GPIO 12-19) */
+#define TV_BASE_PIN 12
+
 /* PSRAM (auto-detect CS pin at runtime) */
 #define PSRAM_CS_PIN_RP2350B 47
 #define PSRAM_CS_PIN_RP2350A 8

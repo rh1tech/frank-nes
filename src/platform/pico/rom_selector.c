@@ -31,6 +31,11 @@ extern int pal_write_idx;
 extern volatile int pending_pal_idx;
 extern uint8_t test_pixels[];
 extern void audio_fill_silence(int count);
+extern void video_post_frame(const uint8_t *pixels, long pitch);
+extern void video_wait_vsync(void);
+#ifdef VIDEO_COMPOSITE
+extern void video_sync_palette_from_rgb565(int buf_idx);
+#endif
 
 #define SCREEN_W 256
 #define SCREEN_H 240
@@ -100,6 +105,9 @@ static void setup_selector_palette(void) {
 
     pending_pal_idx = pal_write_idx;
     pal_write_idx ^= 1;
+#ifdef VIDEO_COMPOSITE
+    video_sync_palette_from_rgb565(pal_write_idx ^ 1);
+#endif
 }
 
 /* Map an RGB555 pixel to the nearest 6x6x6 cube palette index */
@@ -986,13 +994,7 @@ static int read_selector_buttons(void) {
 /* ─── Main selector loop ──────────────────────────────────────────── */
 
 static void selector_wait_vsync(void) {
-    while (pending_pixels != NULL) {
-#ifdef USB_HID_ENABLED
-        usbhid_task();
-#endif
-        __asm volatile ("wfe");
-    }
-    vsync_flag = 0;
+    video_wait_vsync();
 }
 
 /* ─── Preload: SD scanning, CRC computation, metadata loading ─────── */
@@ -1022,7 +1024,7 @@ static void show_indexing_progress(const char *label, int current, int total) {
     fb_show = tmp;
     audio_fill_silence(SAMPLE_RATE / 60);
     pending_pitch = SCREEN_W;
-    pending_pixels = fb_show;
+    video_post_frame(fb_show, SCREEN_W);
 }
 
 /* On-demand ROM loading: single ROM loaded to PSRAM base on selection */
@@ -1280,7 +1282,7 @@ static bool file_browser_show(long *out_rom_size) {
         fb_show = tmp;
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_W;
-        pending_pixels = fb_show;
+        video_post_frame(fb_show, SCREEN_W);
 
         int buttons = read_selector_buttons();
         int pressed = buttons & ~prev_buttons;
@@ -1590,7 +1592,7 @@ static int search_dialog_show(void) {
         fb_show = tmp;
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_W;
-        pending_pixels = fb_show;
+        video_post_frame(fb_show, SCREEN_W);
 
         /* Consume raw keyboard chars */
         int raw;
@@ -1757,7 +1759,7 @@ bool rom_selector_show(long *out_rom_size) {
 
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_W;
-        pending_pixels = fb_show;
+        video_post_frame(fb_show, SCREEN_W);
 
         frame_count++;
 
@@ -1876,7 +1878,7 @@ bool rom_selector_show(long *out_rom_size) {
                     uint8_t *tmp2 = fb; fb = fb_show; fb_show = tmp2;
                     audio_fill_silence(SAMPLE_RATE / 60);
                     pending_pitch = SCREEN_W;
-                    pending_pixels = fb_show;
+                    video_post_frame(fb_show, SCREEN_W);
                     frame_count++;
                     info_anim_frame++;
                     if (info_anim_frame >= INFO_ANIM_FRAMES) {
@@ -1921,12 +1923,12 @@ bool rom_selector_show(long *out_rom_size) {
                 selector_wait_vsync();
                 audio_fill_silence(SAMPLE_RATE / 60);
                 pending_pitch = SCREEN_W;
-                pending_pixels = fb_show;
+                video_post_frame(fb_show, SCREEN_W);
                 for (int i = 0; i < 120; i++) {
                     selector_wait_vsync();
                     audio_fill_silence(SAMPLE_RATE / 60);
                     pending_pitch = SCREEN_W;
-                    pending_pixels = fb_show;
+                    video_post_frame(fb_show, SCREEN_W);
                 }
                 continue;
             }
@@ -2002,6 +2004,9 @@ static void setup_welcome_palette(void) {
     c = rgb565(0xE5, 0x00, 0x11); pal[PAL_LOGO_RED]     = c | ((uint32_t)c << 16);
     c = rgb565(0x90, 0x90, 0x90); pal[PAL_LOGO_CIRCLE]  = c | ((uint32_t)c << 16);
     c = rgb565(0x60, 0x60, 0x60); pal[PAL_LOGO_SHADOW]  = c | ((uint32_t)c << 16);
+#ifdef VIDEO_COMPOSITE
+    video_sync_palette_from_rgb565(buf);
+#endif
 }
 
 static void draw_filled_circle(int cx, int cy, int r, uint8_t color) {
@@ -2126,7 +2131,7 @@ void welcome_screen_show(void) {
         fb_show = tmp;
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_W;
-        pending_pixels = fb_show;
+        video_post_frame(fb_show, SCREEN_W);
         frame++;
 
         /* Check input after the initial settle period */
@@ -2149,7 +2154,7 @@ void welcome_screen_show(void) {
         if (read_selector_buttons() == 0) break;
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_W;
-        pending_pixels = fb_show;
+        video_post_frame(fb_show, SCREEN_W);
     }
 }
 
@@ -2173,6 +2178,6 @@ void sd_error_show(void) {
         fb_show = tmp;
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_W;
-        pending_pixels = fb_show;
+        video_post_frame(fb_show, SCREEN_W);
     }
 }

@@ -5,9 +5,13 @@
  * SPDX-License-Identifier: MIT
  */
 
+#ifndef VIDEO_COMPOSITE
 #include "pico_hdmi/hstx_data_island_queue.h"
 #include "pico_hdmi/hstx_packet.h"
 #include "pico_hdmi/video_output.h"
+#else
+#include "graphics.h"
+#endif
 
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
@@ -48,12 +52,19 @@
 static uint8_t big_stack[16384] __attribute__((aligned(8)));
 static void real_main(void);
 
+#ifndef VIDEO_COMPOSITE
 #define FRAME_WIDTH 640
 #define FRAME_HEIGHT 480
+#endif
 
 #define NES_WIDTH 256
 #define NES_HEIGHT 240
 #define SAMPLE_RATE 44100
+
+#ifdef VIDEO_COMPOSITE
+/* Framebuffer for composite TV: 8-bit indexed, 256x240 */
+static uint8_t tv_framebuf[NES_WIDTH * NES_HEIGHT];
+#endif
 
 
 /* ROM embedded in flash by CMake (objcopy) */
@@ -83,6 +94,7 @@ volatile long pending_pitch;
 /* Vsync flag — set by Core 1 DMA ISR, cleared by Core 0 after emulating */
 volatile uint32_t vsync_flag;
 
+#ifndef VIDEO_COMPOSITE
 static void __not_in_flash("vsync") vsync_cb(void)
 {
     /* Apply pending frame pointer during vblank — safe from tearing */
@@ -99,6 +111,26 @@ static void __not_in_flash("vsync") vsync_cb(void)
     vsync_flag = 1;
     __sev(); /* wake Core 0 from WFE */
 }
+#else
+/* Copy QuickNES frame (pitch=272) into contiguous TV framebuffer (width=256) */
+static void tv_copy_frame(const uint8_t *src, long pitch) {
+    if (pitch == NES_WIDTH)
+        memcpy(tv_framebuf, src, NES_WIDTH * NES_HEIGHT);
+    else
+        for (int y = 0; y < NES_HEIGHT; y++)
+            memcpy(&tv_framebuf[y * NES_WIDTH], src + y * pitch, NES_WIDTH);
+}
+
+/* Core 1 entry point for composite TV */
+static void render_core_tv(void) {
+    graphics_init();
+    graphics_set_buffer(tv_framebuf, NES_WIDTH, NES_HEIGHT);
+    graphics_set_mode(GRAPHICSMODE_DEFAULT);
+    graphics_set_offset(32, 0);
+    graphics_set_palette(200, RGB888(0, 0, 0));
+    while (1) tight_loop_contents();
+}
+#endif
 
 /*
  * Audio pipeline — same architecture as pico-infonesPlus:
@@ -112,6 +144,7 @@ static void __not_in_flash("vsync") vsync_cb(void)
  */
 static int audio_frame_counter = 0;
 
+#ifndef VIDEO_COMPOSITE
 /* ─── HDMI audio: encode mono NES samples into Data Island packets ─── */
 static int16_t audio_carry[3];
 static int audio_carry_count = 0;
@@ -185,6 +218,7 @@ static void hdmi_fill_silence(int count)
         hstx_di_queue_push(&island);
     }
 }
+#endif /* !VIDEO_COMPOSITE */
 
 /* ─── Audio routing: HDMI or I2S based on settings ────────────────── */
 static bool i2s_initialized = false;
@@ -211,10 +245,17 @@ static const int16_t *apply_volume(const int16_t *buf, int count) {
 static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int count)
 {
     if (g_settings.audio_mode == AUDIO_MODE_DISABLED) {
+#ifndef VIDEO_COMPOSITE
         hdmi_fill_silence(count);
+#endif
         return;
     }
     const int16_t *out = (g_settings.volume < 100) ? apply_volume(buf, count) : buf;
+#ifdef VIDEO_COMPOSITE
+    /* Composite mode: I2S only */
+    ensure_i2s_initialized();
+    i2s_audio_push_samples(out, count);
+#else
     if (g_settings.audio_mode == AUDIO_MODE_I2S) {
         ensure_i2s_initialized();
         i2s_audio_push_samples(out, count);
@@ -222,17 +263,84 @@ static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int c
     } else {
         hdmi_push_samples(out, count);
     }
+#endif
 }
 
 void audio_fill_silence(int count)
 {
+#ifdef VIDEO_COMPOSITE
+    ensure_i2s_initialized();
+    i2s_audio_fill_silence(count);
+#else
     if (g_settings.audio_mode == AUDIO_MODE_I2S) {
         ensure_i2s_initialized();
         i2s_audio_fill_silence(count);
     }
     hdmi_fill_silence(count);
+#endif
 }
 
+/* Post a frame for display and wait for it to be consumed */
+void video_post_frame(const uint8_t *pixels, long pitch) {
+#ifdef VIDEO_COMPOSITE
+    if (pitch == NES_WIDTH)
+        memcpy(tv_framebuf, pixels, NES_WIDTH * NES_HEIGHT);
+    else
+        for (int y = 0; y < NES_HEIGHT; y++)
+            memcpy(&tv_framebuf[y * NES_WIDTH], pixels + y * pitch, NES_WIDTH);
+#else
+    pending_pitch = pitch;
+    pending_pixels = pixels;
+#endif
+}
+
+void video_wait_vsync(void) {
+#ifdef VIDEO_COMPOSITE
+    sleep_ms(1);
+#else
+    while (pending_pixels != NULL) {
+#if USB_HID_ENABLED
+        usbhid_task();
+#endif
+        __wfe();
+    }
+    vsync_flag = 0;
+#endif
+}
+
+#ifdef VIDEO_COMPOSITE
+/* Sync NES palette to composite TV driver */
+void video_sync_palette(void) {
+    int pal_size = 0;
+    const int16_t *pal = qnes_get_palette(&pal_size);
+    const qnes_rgb_t *colors = qnes_get_color_table();
+    if (!pal || !colors) return;
+    for (int i = 0; i < pal_size && i < 256; i++) {
+        int idx = pal[i];
+        if (idx < 0 || idx >= 512) idx = 0x0F;
+        const qnes_rgb_t *c = &colors[idx];
+        graphics_set_palette(i, ((uint32_t)c->r << 16) | ((uint32_t)c->g << 8) | c->b);
+    }
+    graphics_set_palette(200, 0x000000);
+}
+
+/* Sync rgb565_palette_32 entries to composite TV driver (for menu screens) */
+void video_sync_palette_from_rgb565(int buf_idx) {
+    for (int i = 0; i < 256; i++) {
+        uint16_t c16 = (uint16_t)(rgb565_palette_32[buf_idx][i] & 0xFFFF);
+        uint8_t r = ((c16 >> 11) & 0x1F) << 3;
+        uint8_t g = ((c16 >> 5) & 0x3F) << 2;
+        uint8_t b = (c16 & 0x1F) << 3;
+        graphics_set_palette(i, ((uint32_t)r << 16) | ((uint32_t)g << 8) | b);
+    }
+    graphics_set_palette(200, 0x000000);
+}
+
+static void update_palette(int buf_idx) {
+    (void)buf_idx;
+    video_sync_palette();
+}
+#else
 /* Build RGB565 palette from QuickNES frame palette + color table */
 static void update_palette(int buf_idx)
 {
@@ -287,6 +395,7 @@ void __not_in_flash("scanline") scanline_callback(
     out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 0;
     out[4] = 0; out[5] = 0; out[6] = 0; out[7] = 0;
 }
+#endif
 
 /* Pixel buffer — used by settings menu for rendering */
 uint8_t test_pixels[NES_WIDTH * NES_HEIGHT];
@@ -554,16 +663,23 @@ static int ps2kbd_to_qnes(uint16_t kbd)
 
 static void real_main(void)
 {
-    /* Overclock to 378 MHz — same pattern as murmgenesis */
+#ifdef VIDEO_COMPOSITE
+    /* Overclock to 378 MHz for composite TV mode */
     vreg_disable_voltage_limit();
     vreg_set_voltage(VREG_VOLTAGE_1_60);
     sleep_ms(10);
-    // Use 252 MHz to get an even divider (2) for the 126 MHz HSTX clock.
-    // Odd dividers (like 3 for 378 MHz) result in a 33% duty cycle, causing HDMI signal drops!
-    // This also keeps pll_usb at 48 MHz so USB CDC serial console works.
+    set_flash_timings(378, 88);
+    sleep_ms(10);
+    set_sys_clock_khz(378000, true);
+#else
+    /* Overclock to 252 MHz — even divider (2) for 126 MHz HSTX clock */
+    vreg_disable_voltage_limit();
+    vreg_set_voltage(VREG_VOLTAGE_1_60);
+    sleep_ms(10);
     set_flash_timings(252, 88);
     sleep_ms(10);
     set_sys_clock_khz(252000, true);
+#endif
 
     stdio_init_all();
     uart_logging_init();
@@ -606,6 +722,13 @@ static void real_main(void)
     bool rom_loaded = false;
     xip_cache_invalidate_all();
 
+#ifdef VIDEO_COMPOSITE
+    /* Start composite TV output — Core 1 runs the TV driver */
+    memset(tv_framebuf, 0, sizeof(tv_framebuf));
+    multicore_launch_core1(render_core_tv);
+    sleep_ms(200);
+    audio_fill_silence(SAMPLE_RATE / 60 * 6);
+#else
     /* Start HDMI */
     frame_pixels = test_pixels;
     frame_pitch = NES_WIDTH;
@@ -625,6 +748,7 @@ static void real_main(void)
     video_output_set_scanline_callback(scanline_callback);
     multicore_launch_core1(video_output_core1_run);
     sleep_ms(100);
+#endif
 
     /* Phase 2: CRC computation + metadata loading with progress display */
     if (psram_available && num_roms > 0) {
@@ -714,6 +838,7 @@ static void real_main(void)
     if (rom_loaded) {
         bool reset_requested = false;
         while (1) {
+#ifndef VIDEO_COMPOSITE
             /* Wait for vsync — Core 1 applies pending frame during vblank. */
             while (pending_pixels != NULL) {
 #if USB_HID_ENABLED
@@ -722,6 +847,7 @@ static void real_main(void)
                 __wfe();
             }
             vsync_flag = 0;
+#endif
 
             /* Fresh gamepad read right at vsync — input from NOW, not
              * from the previous frame. ~100µs cost is negligible. */
@@ -817,10 +943,12 @@ static void real_main(void)
             pending_pal_idx = pal_write_idx;
             pal_write_idx ^= 1;
 
-            /* Post frame to pending buffer — vsync callback will apply it
-             * during vblank for tear-free display. */
+#ifdef VIDEO_COMPOSITE
+            tv_copy_frame(qnes_get_pixels(), 272);
+#else
             pending_pitch = 272;
             pending_pixels = qnes_get_pixels();
+#endif
 
         }
         if (reset_requested) continue;

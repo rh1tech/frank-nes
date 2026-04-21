@@ -35,9 +35,16 @@ set(COREDIR ${SRCDIR}/core_quicknes)
 set(EMU2413DIR ${SRCDIR}/emu2413)
 set(PICODIR ${SRCDIR}/platform/pico)
 
-# HSTX clocked from PLL_USB at 126MHz (reconfigured in main)
-add_compile_definitions(MODE_HSTX_CLK_DIV=1)
-add_subdirectory(${DRIVERSDIR}/pico_hdmi pico_hdmi)
+# Video output selection: HDMI (default) or Composite TV
+option(VIDEO_COMPOSITE "Build with composite TV output instead of HDMI" OFF)
+
+if(NOT VIDEO_COMPOSITE)
+    # HSTX clocked from PLL_USB at 126MHz (reconfigured in main)
+    add_compile_definitions(MODE_HSTX_CLK_DIV=1)
+    add_subdirectory(${DRIVERSDIR}/pico_hdmi pico_hdmi)
+else()
+    add_subdirectory(${DRIVERSDIR}/tv tv_driver)
+endif()
 
 # Peripheral drivers (always compiled)
 set(PSRAM_MAX_FREQ_MHZ 133 CACHE STRING "PSRAM clock frequency in MHz")
@@ -127,6 +134,9 @@ target_compile_definitions(frank-nes PRIVATE
     SDCARD_PIN_SPI0_MISO=4
     SDCARD_PIN_SPI0_CS=5
 )
+if(VIDEO_COMPOSITE)
+    target_compile_definitions(frank-nes PRIVATE VIDEO_COMPOSITE)
+endif()
 
 # C++ flags: no exceptions, no RTTI (saves flash/RAM)
 # -mno-unaligned-access: QuickNES casts byte* to uint32_t* for tile cache,
@@ -150,11 +160,15 @@ target_link_libraries(frank-nes
     hardware_pio
     hardware_pll
     hardware_xip_cache
-    pico_hdmi
     sdcard
     nespad
     ps2kbd
 )
+if(VIDEO_COMPOSITE)
+    target_link_libraries(frank-nes tv_driver)
+else()
+    target_link_libraries(frank-nes pico_hdmi)
+endif()
 
 if(USB_HID_ENABLED)
     target_link_libraries(frank-nes usbhid)

@@ -193,7 +193,12 @@ static uint16_t key_to_state_bit(uint8_t key) {
 }
 
 extern "C" void ps2kbd_init(void) {
+#ifdef VIDEO_COMPOSITE
+    /* Composite TV uses PIO0; PS/2 keyboard must use PIO1 */
+    kbd = new Ps2Kbd_Mrmltr(pio1, PS2_PIN_CLK, key_handler);
+#else
     kbd = new Ps2Kbd_Mrmltr(pio0, PS2_PIN_CLK, key_handler);
+#endif
     kbd->init_gpio();
     g_kbd_state = 0;
 }

@@ -28,6 +28,11 @@ extern uint32_t rgb565_palette_32[2][256];
 extern int pal_write_idx;
 extern volatile int pending_pal_idx;
 extern void audio_fill_silence(int count);
+extern void video_post_frame(const uint8_t *pixels, long pitch);
+extern void video_wait_vsync(void);
+#ifdef VIDEO_COMPOSITE
+extern void video_sync_palette_from_rgb565(int buf_idx);
+#endif
 
 #define SAMPLE_RATE 44100
 
@@ -444,6 +449,9 @@ static void setup_menu_palette(void) {
 
     pending_pal_idx = pal_write_idx;
     pal_write_idx ^= 1;
+#ifdef VIDEO_COMPOSITE
+    video_sync_palette_from_rgb565(pal_write_idx ^ 1);
+#endif
 }
 
 /* ─── Input reading (merge all sources) ───────────────────────────── */
@@ -927,7 +935,7 @@ static int slot_picker_show(uint8_t *screen, bool is_save) {
         if (read_menu_buttons() == 0) break;
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_WIDTH;
-        pending_pixels = screen;
+        video_post_frame(screen, SCREEN_WIDTH);
     }
     int prev_buttons = read_menu_buttons();
 
@@ -967,19 +975,14 @@ draw:
         draw_slot_picker_selection(screen, selected);
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_WIDTH;
-        pending_pixels = screen;
+        video_post_frame(screen, SCREEN_WIDTH);
     }
 }
 
 /* ─── Menu main loop ──────────────────────────────────────────────── */
 
 static void menu_wait_vsync(void) {
-    while (pending_pixels != NULL) {
-#ifdef USB_HID_ENABLED
-        usbhid_task();
-#endif
-        __asm volatile ("wfe");
-    }
+    video_wait_vsync();
     vsync_flag = 0;
 }
 
@@ -1009,7 +1012,7 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
         audio_fill_silence(SAMPLE_RATE / 60);
         draw_settings_menu(screen_buffer, selected);
         pending_pitch = SCREEN_WIDTH;
-        pending_pixels = screen_buffer;
+        video_post_frame(screen_buffer, SCREEN_WIDTH);
     }
     int prev_buttons = read_menu_buttons();  /* ignore any still-held buttons */
 
@@ -1089,7 +1092,7 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
                     audio_fill_silence(SAMPLE_RATE / 60);
                     draw_settings_menu(screen_buffer, selected);
                     pending_pitch = SCREEN_WIDTH;
-                    pending_pixels = screen_buffer;
+                    video_post_frame(screen_buffer, SCREEN_WIDTH);
                     if (read_menu_buttons() == 0) break;
                 }
                 return SETTINGS_RESULT_RESET;
@@ -1112,7 +1115,7 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
         draw_settings_menu(screen_buffer, selected);
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_WIDTH;
-        pending_pixels = screen_buffer;
+        video_post_frame(screen_buffer, SCREEN_WIDTH);
     }
 
     /* Wait for buttons to be released before returning to game */
@@ -1122,7 +1125,7 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
         audio_fill_silence(SAMPLE_RATE / 60);
         draw_settings_menu(screen_buffer, selected);
         pending_pitch = SCREEN_WIDTH;
-        pending_pixels = screen_buffer;
+        video_post_frame(screen_buffer, SCREEN_WIDTH);
         if (btn == 0) break;
     }
 
