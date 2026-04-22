@@ -1,7 +1,11 @@
 /*
- * PIO-based HDMI driver for frank-nes
+ * PIO-based HDMI/VGA driver for frank-nes
  * Adapted from murmsnes HDMI driver by Mikhail Matveev
  * SPDX-License-Identifier: MIT
+ *
+ * Supports autodetection: testPins() probes GPIO12/13 to determine
+ * whether VGA or HDMI is connected. graphics_init() dispatches
+ * to VGA or HDMI accordingly based on the global SELECT_VGA flag.
  */
 
 #pragma once
@@ -13,6 +17,8 @@
 #include "hardware/dma.h"
 
 #define VIDEO_DMA_IRQ (DMA_IRQ_0)
+
+/* --- HDMI pin configuration --- */
 
 #ifndef HDMI_BASE_PIN
 #define HDMI_BASE_PIN (12)
@@ -36,6 +42,16 @@
 #define beginHDMI_PIN_clk (HDMI_BASE_PIN)
 #endif
 
+/* --- VGA pin configuration (shared PIO/DMA — only one active) --- */
+
+#ifndef VGA_BASE_PIN
+#define VGA_BASE_PIN (12)
+#endif
+
+#define PIO_VGA pio0
+#define VGA_DMA_IRQ (DMA_IRQ_0)
+
+/* --- Common types --- */
 
 typedef struct video_mode_t{
   int h_total;
@@ -48,6 +64,28 @@ enum graphics_mode_t {
     TEXTMODE_DEFAULT,
     GRAPHICSMODE_DEFAULT,
 };
+
+/* --- VGA/HDMI autodetection --- */
+
+/* Set by main before calling graphics_init() */
+extern bool SELECT_VGA;
+
+/* Probe two GPIO pins; returns bitmask.
+ * VGA detected when result == 0 or result == 0x1F. */
+int testPins(uint32_t pin0, uint32_t pin1);
+
+/* --- Dispatching API (VGA or HDMI based on SELECT_VGA) --- */
+
+/* Call this instead of graphics_init_hdmi() — dispatches automatically */
+void graphics_init(void);
+
+/* Call this instead of graphics_set_palette_hdmi() — dispatches automatically */
+void graphics_set_palette(const uint8_t i, const uint32_t color888);
+
+/* Call this instead of graphics_set_bgcolor_hdmi() — dispatches automatically */
+void graphics_set_bgcolor(const uint32_t color888);
+
+/* --- HDMI-specific API (always available, called internally or when !SELECT_VGA) --- */
 
 void graphics_init_hdmi(void);
 void graphics_set_buffer(uint8_t *buffer);
@@ -66,7 +104,11 @@ void graphics_set_shift(int x, int y);
 
 struct video_mode_t graphics_get_video_mode(int mode);
 
-/* Global buffer dimensions - set before calling graphics_init_hdmi() */
+/* VGA-specific setup (only used when SELECT_VGA) */
+void graphics_set_offset(const int x, const int y);
+void graphics_set_mode_vga(enum graphics_mode_t mode);
+
+/* Global buffer dimensions - set before calling graphics_init() */
 extern int graphics_buffer_width;
 extern int graphics_buffer_height;
 

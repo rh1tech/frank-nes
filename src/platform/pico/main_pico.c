@@ -363,31 +363,35 @@ static void update_palette(int buf_idx) {
     video_sync_palette();
 }
 #elif defined(HDMI_PIO)
-/* Sync NES palette to PIO HDMI driver */
+/* Sync NES palette to PIO HDMI or VGA driver (dispatches via SELECT_VGA) */
 void video_sync_palette(void) {
+    extern bool SELECT_VGA;
     int pal_size = 0;
     const int16_t *pal = qnes_get_palette(&pal_size);
     const qnes_rgb_t *colors = qnes_get_color_table();
     if (!pal || !colors) return;
-    for (int i = 0; i < pal_size && i < 251; i++) {
+    int limit = SELECT_VGA ? 256 : 251;
+    for (int i = 0; i < pal_size && i < limit; i++) {
         int idx = pal[i];
         if (idx < 0 || idx >= 512) idx = 0x0F;
         const qnes_rgb_t *c = &colors[idx];
-        graphics_set_palette_hdmi(i, ((uint32_t)c->r << 16) | ((uint32_t)c->g << 8) | c->b);
+        graphics_set_palette(i, ((uint32_t)c->r << 16) | ((uint32_t)c->g << 8) | c->b);
     }
-    graphics_restore_sync_colors();
+    if (!SELECT_VGA) graphics_restore_sync_colors();
 }
 
-/* Sync rgb565_palette_32 entries to PIO HDMI driver (for menu screens) */
+/* Sync rgb565_palette_32 entries to PIO HDMI/VGA driver (for menu screens) */
 void video_sync_palette_from_rgb565(int buf_idx) {
-    for (int i = 0; i < 251; i++) {
+    extern bool SELECT_VGA;
+    int limit = SELECT_VGA ? 256 : 251;
+    for (int i = 0; i < limit; i++) {
         uint16_t c16 = (uint16_t)(rgb565_palette_32[buf_idx][i] & 0xFFFF);
         uint8_t r = ((c16 >> 11) & 0x1F) << 3;
         uint8_t g = ((c16 >> 5) & 0x3F) << 2;
         uint8_t b = (c16 & 0x1F) << 3;
-        graphics_set_palette_hdmi(i, ((uint32_t)r << 16) | ((uint32_t)g << 8) | b);
+        graphics_set_palette(i, ((uint32_t)r << 16) | ((uint32_t)g << 8) | b);
     }
-    graphics_restore_sync_colors();
+    if (!SELECT_VGA) graphics_restore_sync_colors();
 }
 
 static void update_palette(int buf_idx) {
@@ -783,16 +787,29 @@ static void real_main(void)
     sleep_ms(200);
     audio_fill_silence(SAMPLE_RATE / 60 * 6);
 #elif defined(HDMI_PIO)
-    /* Start PIO HDMI output — runs on Core 0 via DMA ISR, no Core 1 needed */
+    /* Autodetect VGA vs HDMI by probing GPIO 12/13 */
+    {
+        extern bool SELECT_VGA;
+        uint8_t link = testPins(12, 13);
+        SELECT_VGA = (link == 0) || (link == 0x1F);
+        printf("HDMI_PIO: testPins=%u SELECT_VGA=%d\n", link, SELECT_VGA);
+    }
+    /* Start PIO HDMI/VGA output — runs on Core 0 via DMA ISR, no Core 1 needed */
     memset(soft_framebuf, 0, sizeof(soft_framebuf));
     graphics_buffer_width = NES_WIDTH;
     graphics_buffer_height = NES_HEIGHT;
     graphics_set_buffer(soft_framebuf);
-    graphics_init_hdmi();
-    /* Set initial palette to black */
-    for (int i = 0; i < 251; i++) graphics_set_palette_hdmi(i, 0);
-    graphics_set_palette_hdmi(255, 0);
-    graphics_restore_sync_colors();
+    graphics_init();  /* dispatches to VGA or HDMI based on SELECT_VGA */
+    {
+        extern bool SELECT_VGA;
+        /* Set initial palette to black */
+        int limit = SELECT_VGA ? 256 : 251;
+        for (int i = 0; i < limit; i++) graphics_set_palette(i, 0);
+        if (!SELECT_VGA) {
+            graphics_set_palette_hdmi(255, 0);
+            graphics_restore_sync_colors();
+        }
+    }
     sleep_ms(200);
     audio_fill_silence(SAMPLE_RATE / 60 * 6);
 #else
