@@ -800,6 +800,7 @@ static void real_main(void)
     graphics_buffer_height = NES_HEIGHT;
     graphics_set_buffer(soft_framebuf);
     graphics_init();  /* dispatches to VGA or HDMI based on SELECT_VGA */
+    graphics_set_offset(32, 0);  /* center 256px NES in 320px display */
     {
         extern bool SELECT_VGA;
         /* Set initial palette to black */
