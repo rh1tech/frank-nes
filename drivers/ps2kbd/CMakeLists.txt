@@ -24,7 +24,7 @@ target_include_directories(ps2kbd PUBLIC
 )
 
 target_include_directories(ps2kbd PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/../../platform/pico
+    ${PICODIR}
 )
 
 pico_generate_pio_header(ps2kbd
