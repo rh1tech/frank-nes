@@ -52,6 +52,22 @@ if [ "${VGA_HSTX_TEST_PATTERN:-0}" = "1" ]; then
     CMAKE_OPTS="$CMAKE_OPTS -DVGA_HSTX_TEST_PATTERN=ON"
 fi
 
+# Optional: no-op the active-line fill (diagnose IRQ overrun vs config bug).
+# Should display a solid black screen with valid sync.
+if [ "${VGA_HSTX_NOOP_ACTIVE:-0}" = "1" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DVGA_HSTX_NOOP_ACTIVE=ON"
+fi
+
+# Optional: producer ring diagnostic (fills ring with solid magenta).
+if [ "${VGA_HSTX_RING_TEST:-0}" = "1" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DVGA_HSTX_RING_TEST=ON"
+fi
+
+# Optional: producer runs convert_line on constant RGB565 red.
+if [ "${VGA_HSTX_CONVERT_TEST:-0}" = "1" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DVGA_HSTX_CONVERT_TEST=ON"
+fi
+
 # USB HID host mode (disabled by default for USB serial logging)
 # Usage: USB_HID=1 ./build.sh  to enable (release builds use release.sh)
 if [ "${USB_HID:-0}" = "1" ]; then

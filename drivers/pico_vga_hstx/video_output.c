@@ -74,14 +74,32 @@ uint16_t frame_width = 0;
 uint16_t frame_height = 0;
 volatile uint32_t video_frame_count = 0;
 
-// RGB565 pixels written by the scanline callback (shared scratch buffer).
-static uint32_t line_buffer[MODE_H_ACTIVE_PIXELS / 2] __attribute__((aligned(4)));
+// RGB565 pixels written by the scanline callback (per-slot scratch buffer).
+// One per ring slot so the producer and IRQ consumer never touch the same
+// slot at the same time.
+#define LINE_RING_SLOTS 4
+static uint32_t line_buffer[LINE_RING_SLOTS][MODE_H_ACTIVE_PIXELS / 2]
+    __attribute__((aligned(4)));
 
 // FIFO-ready pixel data: 1 pixel per 32-bit word (byte replicated to all 4
 // bytes so SEL_P sees the same byte regardless of rotation phase).
-// Ping-pong to overlap conversion with DMA transfer of the previous line.
-static uint32_t pixel_buf_a[MODE_H_ACTIVE_PIXELS] __attribute__((aligned(4)));
-static uint32_t pixel_buf_b[MODE_H_ACTIVE_PIXELS] __attribute__((aligned(4)));
+// Ring of pre-converted lines. Producer (background task on Core 1) fills
+// slot `pixel_ring_produce_slot` for the line it's converting; the DMA IRQ
+// consumes from `pixel_ring_consume_slot` when the next active line fires.
+// Slots that are ready have `pixel_ring_line[slot]` set to the active-line
+// index they were converted for; -1 means empty.
+static uint32_t pixel_ring[LINE_RING_SLOTS][MODE_H_ACTIVE_PIXELS]
+    __attribute__((aligned(4)));
+static volatile int32_t pixel_ring_line[LINE_RING_SLOTS];
+static volatile uint32_t pixel_ring_produce_slot;
+static volatile uint32_t pixel_ring_consume_slot;
+
+// Active line the producer must fill next. Advanced atomically by the
+// producer after each conversion.
+static volatile uint32_t next_line_to_convert;
+
+// Solid-black filler used when the ring underflows.
+static uint32_t black_line[MODE_H_ACTIVE_PIXELS] __attribute__((aligned(4)));
 
 static uint32_t v_scanline = 2;
 static bool vactive_cmdlist_posted = false;
@@ -143,7 +161,7 @@ static inline uint32_t __scratch_x("vga") rgb565_to_vga_word(uint16_t rgb565)
     return WORD4(byte);
 }
 
-static void __scratch_x("vga") convert_line_rgb565_to_vga(const uint32_t *src, uint32_t *dst)
+static __attribute__((noinline)) void __scratch_x("vga") convert_line_rgb565_to_vga(const uint32_t *src, uint32_t *dst)
 {
     for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS / 2; i++) {
         uint32_t w = src[i];
@@ -157,7 +175,7 @@ static void __scratch_x("vga") convert_line_rgb565_to_vga(const uint32_t *src, u
 // Byte format: HS=1 VS=1 (idle) | RR GG BB. RGB colors are RGB222 so each
 // channel value is in 0..3. Use max-brightness primaries:
 //   white, yellow, cyan, green, magenta, red, blue, black
-static void __scratch_x("vga") paint_test_pattern(uint32_t *dst, uint32_t active_line)
+static __attribute__((noinline)) void __scratch_x("vga") paint_test_pattern(uint32_t *dst, uint32_t active_line)
 {
     (void)active_line;
     static const uint8_t bar_rgb222[8] = {
@@ -223,30 +241,40 @@ void __scratch_x("vga") dma_irq_handler(void)
         ch->transfer_count = count_of(vblank_line_vsync_on);
         if (v_scanline == MODE_V_FRONT_PORCH) {
             video_frame_count++;
+            // Reset producer ring at frame start so the background task
+            // starts filling from active_line = 0.
+            for (uint32_t i = 0; i < LINE_RING_SLOTS; i++)
+                pixel_ring_line[i] = -1;
+            pixel_ring_produce_slot = 0;
+            pixel_ring_consume_slot = 0;
+            next_line_to_convert = 0;
             if (vsync_callback)
                 vsync_callback();
         }
     } else if (s.active_video && !vactive_cmdlist_posted) {
-        uint32_t *pixbuf = dma_pong ? pixel_buf_a : pixel_buf_b;
-#ifdef VGA_HSTX_TEST_PATTERN
-        // Driver-isolated SMPTE color bars. The scanline callback is ignored.
-        paint_test_pattern(pixbuf, s.active_line);
-#else
-        // Ask host to fill the RGB565 line buffer, then convert.
-        if (scanline_callback) {
-            scanline_callback(v_scanline, s.active_line, line_buffer);
-        } else {
-            memset(line_buffer, 0, sizeof(line_buffer));
-        }
-        convert_line_rgb565_to_vga(line_buffer, pixbuf);
-#endif
-
+        // Post the active-line header. The pixel buffer for this line has
+        // already been converted by the background task (or we fall back to
+        // black on underflow).
         ch->read_addr = (uintptr_t)vactive_line_header;
         ch->transfer_count = count_of(vactive_line_header);
         vactive_cmdlist_posted = true;
     } else if (s.active_video && vactive_cmdlist_posted) {
-        // Follow-up DMA for the active pixel data.
-        uint32_t *pixbuf = dma_pong ? pixel_buf_a : pixel_buf_b;
+        // Follow-up DMA for the active pixel data. Each converted line is
+        // displayed twice (line-doubled) to halve the producer workload:
+        //   active_line 2k     -> consume slot (fresh from producer)
+        //   active_line 2k + 1 -> replay the same slot, then release it
+        uint32_t *pixbuf = black_line;
+        uint32_t slot = pixel_ring_consume_slot;
+        uint32_t produced_line = (uint32_t)pixel_ring_line[slot];
+        uint32_t wanted = s.active_line >> 1;  // producer line index
+        if (pixel_ring_line[slot] >= 0 && produced_line == wanted) {
+            pixbuf = pixel_ring[slot];
+            if (s.active_line & 1) {
+                // Finished the second (duplicate) display of this slot.
+                pixel_ring_line[slot] = -1;
+                pixel_ring_consume_slot = (slot + 1) % LINE_RING_SLOTS;
+            }
+        }
         ch->read_addr = (uintptr_t)pixbuf;
         ch->transfer_count = MODE_H_ACTIVE_PIXELS;
         vactive_cmdlist_posted = false;
@@ -279,12 +307,79 @@ void video_output_init(uint16_t width, uint16_t height)
     dma_channel_claim(DMACH_PING);
     dma_channel_claim(DMACH_PONG);
 
-    // Pre-fill both pixel buffers with idle so stray DMA before the first
-    // callback doesn't blank HS/VS.
-    for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS; i++) {
-        pixel_buf_a[i] = SYNC_IDLE;
-        pixel_buf_b[i] = SYNC_IDLE;
+    // Solid-black fallback line for ring underflows.
+    for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS; i++)
+        black_line[i] = SYNC_IDLE;
+
+    // Ring state.
+    for (uint32_t i = 0; i < LINE_RING_SLOTS; i++)
+        pixel_ring_line[i] = -1;
+    pixel_ring_produce_slot = 0;
+    pixel_ring_consume_slot = 0;
+    next_line_to_convert = 0;
+}
+
+// Producer: convert the next scheduled active line if ring has space. Called
+// from Core 1's background loop on every iteration. Does nothing if the
+// producer has already filled every slot and the IRQ hasn't drained any.
+static __attribute__((noinline)) void __scratch_x("vga") producer_task(void)
+{
+    uint32_t slot = pixel_ring_produce_slot;
+    if (pixel_ring_line[slot] != -1)
+        return;  // ring full, IRQ hasn't consumed this slot yet
+
+    uint32_t active_line = next_line_to_convert;
+    // Each converted line is displayed twice (line-doubled): we only need to
+    // produce half as many lines per frame.
+    if (active_line >= MODE_V_ACTIVE_LINES / 2) {
+        // We've converted this whole frame already; wait for vsync to reset.
+        return;
     }
+
+    uint32_t *line16 = line_buffer[slot];
+
+#if defined(VGA_HSTX_TEST_PATTERN)
+    (void)active_line;
+    paint_test_pattern(pixel_ring[slot], active_line);
+#elif defined(VGA_HSTX_NOOP_ACTIVE)
+    (void)line16;
+    memcpy(pixel_ring[slot], black_line, sizeof(black_line));
+#elif defined(VGA_HSTX_RING_TEST)
+    // Diagnostic: producer writes solid magenta via the ring, bypassing
+    // both the scanline callback and the RGB565 conversion. Verifies that
+    // the ring and IRQ consumer are wired correctly.
+    (void)line16;
+    (void)active_line;
+    uint8_t magenta = (uint8_t)(VGA_BYTE_IDLE | (3 << 4) | (0 << 2) | 3);
+    uint32_t word = WORD4(magenta);
+    for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS; i++)
+        pixel_ring[slot][i] = word;
+#elif defined(VGA_HSTX_CONVERT_TEST)
+    // Diagnostic: fill line16 with a known RGB565 constant (red), then
+    // run the actual conversion function. Verifies convert_line_rgb565_to_vga
+    // in isolation from scanline_callback.
+    (void)active_line;
+    for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS / 2; i++)
+        line16[i] = 0xF800F800u;  // two pure red RGB565 pixels packed
+    convert_line_rgb565_to_vga(line16, pixel_ring[slot]);
+#else
+    // Line doubled: producer's `active_line` (0..239) maps to VGA active
+    // lines `active_line*2` and `active_line*2+1`. Feed the callback the
+    // first of the two since existing scanline callbacks divide active_line
+    // by 2 to get their source line.
+    uint32_t vga_active_line = active_line * 2;
+    uint32_t v_total_scanline = vga_active_line + (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES);
+    if (scanline_callback) {
+        scanline_callback(v_total_scanline, vga_active_line, line16);
+    } else {
+        memset(line16, 0, MODE_H_ACTIVE_PIXELS * sizeof(uint16_t));
+    }
+    convert_line_rgb565_to_vga(line16, pixel_ring[slot]);
+#endif
+
+    pixel_ring_line[slot] = (int32_t)active_line;
+    pixel_ring_produce_slot = (slot + 1) % LINE_RING_SLOTS;
+    next_line_to_convert = active_line + 1;
 }
 
 void video_output_set_background_task(video_output_task_fn task)
@@ -384,9 +479,12 @@ void video_output_core1_run(void)
     dma_channel_start(DMACH_PING);
 
     while (1) {
+        // Pre-convert the next active line ahead of the DMA IRQ so the ISR
+        // stays short. Runs as fast as Core 1 can; throttled by the ring
+        // being full.
+        producer_task();
         if (background_task) {
             background_task();
         }
-        tight_loop_contents();
     }
 }
