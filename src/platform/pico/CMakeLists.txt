@@ -78,6 +78,7 @@ elseif(PLATFORM STREQUAL "dv")
     set(KBD_CLK 0)
     set(HDMI_PIN 6)
     set(VGA_PIN 6)
+    set(USB_HID_ENABLED ON)
 elseif(PLATFORM STREQUAL "z0")
     set(PLATFORM_DEF PLATFORM_Z0)
     set(SD_SCK 30)
@@ -243,6 +244,16 @@ if(PLATFORM STREQUAL "z0")
     # No PSRAM on Waveshare PiZero2350 — drop second pixel buffer (64 KiB) from QuickNES.
     target_compile_definitions(frank-nes PRIVATE QNES_SINGLE_PIXEL_BUF)
     target_link_libraries(frank-nes hardware_spi)
+endif()
+
+# Pimoroni Pico DV Demo: SD pins (GP5/18/19/22) can't map to a single HW SPI
+# peripheral — SCK=5 requires PIO-SPI. pio0 is HDMI; pio1 is shared with i2s,
+# nespad and ps2kbd (claim SM0..SM2 in that init order), so SD takes SM3.
+if(PLATFORM STREQUAL "dv")
+    target_compile_definitions(frank-nes PRIVATE
+        SDCARD_PIO=pio1
+        SDCARD_PIO_SM=3
+    )
 endif()
 
 # C++ flags: no exceptions, no RTTI (saves flash/RAM)
