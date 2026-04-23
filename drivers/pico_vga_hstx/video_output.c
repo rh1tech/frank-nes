@@ -367,12 +367,16 @@ static __attribute__((noinline)) void __scratch_x("vga") producer_task(void)
     // lines `active_line*2` and `active_line*2+1`. Feed the callback the
     // first of the two since existing scanline callbacks divide active_line
     // by 2 to get their source line.
+    //
+    // Zero the whole line_buffer first so any pixels the host callback
+    // doesn't touch (e.g. the 64 left/right border pixels around a 256-wide
+    // NES frame) render as solid black instead of leaking stale contents
+    // from the previous use of this ring slot.
+    memset(line16, 0, MODE_H_ACTIVE_PIXELS * sizeof(uint16_t));
     uint32_t vga_active_line = active_line * 2;
     uint32_t v_total_scanline = vga_active_line + (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES);
     if (scanline_callback) {
         scanline_callback(v_total_scanline, vga_active_line, line16);
-    } else {
-        memset(line16, 0, MODE_H_ACTIVE_PIXELS * sizeof(uint16_t));
     }
     convert_line_rgb565_to_vga(line16, pixel_ring[slot]);
 #endif

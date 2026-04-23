@@ -1343,6 +1343,7 @@ static bool file_browser_show(long *out_rom_size) {
 
     int prev_buttons = read_selector_buttons();
     uint32_t hold_counter = 0;
+    uint32_t fb_frame_count = 0;
 
     while (1) {
         selector_wait_vsync();
@@ -1355,8 +1356,15 @@ static bool file_browser_show(long *out_rom_size) {
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_W;
         video_post_frame(fb_show, SCREEN_W);
+        fb_frame_count++;
 
         int buttons = read_selector_buttons();
+#ifdef VGA_HSTX_AUTOSTART
+        /* Diagnostic: after 60 frames, auto-press A to open the highlighted
+         * entry in the file browser. */
+        if (fb_frame_count == 60)
+            buttons |= BTN_A;
+#endif
         int pressed = buttons & ~prev_buttons;
         if (buttons != 0 && buttons == prev_buttons) {
             hold_counter++;
@@ -1907,6 +1915,13 @@ bool rom_selector_show(long *out_rom_size) {
 
         /* Input happens after posting */
         int buttons = read_selector_buttons();
+#ifdef VGA_HSTX_AUTOSTART
+        /* Diagnostic: inject a synthetic Start press at frame 60 so we
+         * auto-select whatever ROM is focused at boot (usually the last
+         * played ROM, e.g. Contra). */
+        if (frame_count == 60)
+            buttons |= BTN_START;
+#endif
         int pressed = buttons & ~prev_buttons;
         if (buttons != 0 && buttons == prev_buttons) {
             hold_counter++;
@@ -2276,6 +2291,13 @@ void welcome_screen_show(void) {
         /* Auto-continue after 10 seconds */
         if (frame >= 600)
             break;
+
+#ifdef VGA_HSTX_AUTOSTART
+        /* Diagnostic: skip the welcome screen almost immediately so the
+         * capture card can run into the ROM selector without human input. */
+        if (frame >= 30)
+            break;
+#endif
     }
 
     /* Wait for buttons to be released before proceeding */
