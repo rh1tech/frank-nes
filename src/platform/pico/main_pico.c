@@ -1081,6 +1081,30 @@ static void real_main(void)
                 case INPUT_MODE_DISABLED: break;
             }
 
+#ifdef VGA_HSTX_AUTOSTART
+            /* Diagnostic: simulate continuous gameplay input so captured frames
+             * reflect real stress on the driver.
+             *
+             * Strategy: for the first ~60 emulated seconds alternate Start
+             * presses (30 frame on / 30 frame off) — this debounces cleanly
+             * through the 1P/2P menu, then skips the long intro cutscene.
+             * Anywhere else the game ignores Start. After that we hold Right
+             * and pulse B so Bill runs and rapid-fires, which is the stress
+             * case the user reported ("signal disappears while running"). */
+            static uint32_t autoplay_frame = 0;
+            int auto_joy = 0;
+            uint32_t phase = autoplay_frame % 60;
+            if (autoplay_frame < 3600) {
+                /* Pulsed Start (30 on, 30 off). */
+                if (phase < 30) auto_joy |= 0x08;
+            } else {
+                auto_joy |= 0x80;                          /* Right (hold) */
+                if (((autoplay_frame / 4) & 1) == 0)
+                    auto_joy |= 0x02;                      /* + B (rapid) */
+            }
+            autoplay_frame++;
+            joypad1 |= auto_joy;
+#endif
             qnes_emulate_frame(joypad1, joypad2);
 
             /* Push NES audio into DI queue. No padding — produce only what

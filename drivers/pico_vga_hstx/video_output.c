@@ -263,17 +263,31 @@ void __scratch_x("vga") dma_irq_handler(void)
         // displayed twice (line-doubled) to halve the producer workload:
         //   active_line 2k     -> consume slot (fresh from producer)
         //   active_line 2k + 1 -> replay the same slot, then release it
+        //
+        // If the producer falls behind, drain stale slots (produced_line <
+        // wanted) so the ring can resync — the previous behavior held on to
+        // the stale slot forever and caused a visible signal drop during
+        // busy gameplay frames.
         uint32_t *pixbuf = black_line;
-        uint32_t slot = pixel_ring_consume_slot;
-        uint32_t produced_line = (uint32_t)pixel_ring_line[slot];
         uint32_t wanted = s.active_line >> 1;  // producer line index
-        if (pixel_ring_line[slot] >= 0 && produced_line == wanted) {
-            pixbuf = pixel_ring[slot];
-            if (s.active_line & 1) {
-                // Finished the second (duplicate) display of this slot.
-                pixel_ring_line[slot] = -1;
-                pixel_ring_consume_slot = (slot + 1) % LINE_RING_SLOTS;
+        for (uint32_t tries = 0; tries < LINE_RING_SLOTS; tries++) {
+            uint32_t slot = pixel_ring_consume_slot;
+            int32_t produced_line = pixel_ring_line[slot];
+            if (produced_line < 0)
+                break;  // slot empty → underflow, fall back to black
+            if ((uint32_t)produced_line == wanted) {
+                pixbuf = pixel_ring[slot];
+                if (s.active_line & 1) {
+                    pixel_ring_line[slot] = -1;
+                    pixel_ring_consume_slot = (slot + 1) % LINE_RING_SLOTS;
+                }
+                break;
             }
+            if ((uint32_t)produced_line > wanted)
+                break;  // future slot; wait for vsync to resync
+            // produced_line < wanted → stale, drop it and retry next slot
+            pixel_ring_line[slot] = -1;
+            pixel_ring_consume_slot = (slot + 1) % LINE_RING_SLOTS;
         }
         ch->read_addr = (uintptr_t)pixbuf;
         ch->transfer_count = MODE_H_ACTIVE_PIXELS;
