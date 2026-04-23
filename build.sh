@@ -39,6 +39,19 @@ if [ "${HDMI_PIO:-0}" = "1" ]; then
     CMAKE_OPTS="$CMAKE_OPTS -DHDMI_PIO=ON"
 fi
 
+# Optional: HSTX-based VGA output (M2 only, uses HDMI-to-VGA ribbon)
+# Usage: VGA_HSTX=1 ./build.sh
+if [ "${VGA_HSTX:-0}" = "1" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DVGA_HSTX=ON"
+fi
+
+# Optional: replace NES pixel pipeline with SMPTE color bars to isolate
+# the VGA HSTX driver (requires VGA_HSTX=1).
+# Usage: VGA_HSTX=1 VGA_HSTX_TEST_PATTERN=1 ./build.sh
+if [ "${VGA_HSTX_TEST_PATTERN:-0}" = "1" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DVGA_HSTX_TEST_PATTERN=ON"
+fi
+
 # USB HID host mode (disabled by default for USB serial logging)
 # Usage: USB_HID=1 ./build.sh  to enable (release builds use release.sh)
 if [ "${USB_HID:-0}" = "1" ]; then
@@ -52,13 +65,21 @@ if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
     CACHED_PLAT=$(grep -s 'PLATFORM:STRING=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
     CACHED_COMP=$(grep -s 'VIDEO_COMPOSITE:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
     CACHED_PIO=$(grep -s 'HDMI_PIO:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
+    CACHED_VGAH=$(grep -s 'VGA_HSTX:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
+    CACHED_VGAT=$(grep -s 'VGA_HSTX_TEST_PATTERN:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
     WANTED_COMP="OFF"
     WANTED_PIO="OFF"
+    WANTED_VGAH="OFF"
+    WANTED_VGAT="OFF"
     [ "${VIDEO_COMPOSITE:-0}" = "1" ] && WANTED_COMP="ON"
     [ "${HDMI_PIO:-0}" = "1" ] && WANTED_PIO="ON"
+    [ "${VGA_HSTX:-0}" = "1" ] && WANTED_VGAH="ON"
+    [ "${VGA_HSTX_TEST_PATTERN:-0}" = "1" ] && WANTED_VGAT="ON"
     if [ "$CACHED_PLAT" != "$PLATFORM" ] || \
        [ "$CACHED_COMP" != "$WANTED_COMP" ] || \
-       [ "$CACHED_PIO" != "$WANTED_PIO" ]; then
+       [ "$CACHED_PIO" != "$WANTED_PIO" ] || \
+       [ "$CACHED_VGAH" != "$WANTED_VGAH" ] || \
+       [ "$CACHED_VGAT" != "$WANTED_VGAT" ]; then
         rm -rf "$BUILD_DIR"
     fi
 fi

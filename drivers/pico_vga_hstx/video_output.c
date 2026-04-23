@@ -1,0 +1,392 @@
+/*
+ * FRANK NES - NES Emulator for RP2350
+ * VGA HSTX driver (M2 platform only).
+ *
+ * Adapted from drivers/pico_hdmi/video_output.c by stripping HDMI-specific
+ * features (TMDS encoding, Data Islands, audio, AVI InfoFrame) and routing
+ * the HSTX output as plain 8-bit parallel video with HS/VS sync.
+ *
+ * Pin layout (matches drivers/hdmi_pio/vga.c, GPIO 12..19):
+ *   GPIO 12..17 = RGB222 (B0 B1 G0 G1 R0 R1)
+ *   GPIO 18     = HS (active low)
+ *   GPIO 19     = VS (active low)
+ *
+ * HSTX configuration: identical to the HDMI driver for clocking, so that
+ * clk_hstx / CLKDIV = 25.2 MHz pixel clock. Differences vs HDMI:
+ *   - No TMDS lane expansion. Every BIT register maps 1 GPIO -> 1 shift
+ *     register bit (identity mapping of low 8 bits).
+ *   - All command-list entries are RAW. Active data uses HSTX_CMD_RAW; the
+ *     pixel buffer stores one pixel byte per 32-bit FIFO word (in low 8 bits).
+ *   - No Data Islands, no ACR, no AVI InfoFrame, no audio.
+ *
+ * SPDX-License-Identifier: Unlicense
+ */
+
+#include "pico_vga_hstx/video_output.h"
+#include "pico_vga_hstx/hstx_pins.h"
+
+#include "pico/stdlib.h"
+
+#include "hardware/clocks.h"
+#include "hardware/dma.h"
+#include "hardware/gpio.h"
+#include "hardware/irq.h"
+#include "hardware/structs/bus_ctrl.h"
+#include "hardware/structs/hstx_ctrl.h"
+#include "hardware/structs/hstx_fifo.h"
+
+#include <string.h>
+
+// ============================================================================
+// HSTX command words
+// ============================================================================
+
+#define HSTX_CMD_RAW         (0x0u << 12)
+#define HSTX_CMD_RAW_REPEAT  (0x1u << 12)
+#define HSTX_CMD_NOP         (0xfu << 12)
+
+// ============================================================================
+// VGA sync-state patterns (low 8 bits of each FIFO word)
+// ============================================================================
+//
+// HS and VS are active low. Quiescent (both idle) = 0xC0.
+// These bytes are replicated into all 4 bytes of each 32-bit FIFO word so
+// the HSTX output is stable whichever byte the shift register currently
+// presents to SEL_P/SEL_N.
+
+#define VGA_BYTE_IDLE     ((uint8_t)((1u << VGA_HSTX_HS_BIT) | (1u << VGA_HSTX_VS_BIT)))  // 0xC0
+#define VGA_BYTE_HSYNC    ((uint8_t)((0u << VGA_HSTX_HS_BIT) | (1u << VGA_HSTX_VS_BIT)))  // 0x80
+#define VGA_BYTE_VSYNC    ((uint8_t)((1u << VGA_HSTX_HS_BIT) | (0u << VGA_HSTX_VS_BIT)))  // 0x40
+#define VGA_BYTE_VHSYNC   ((uint8_t)((0u << VGA_HSTX_HS_BIT) | (0u << VGA_HSTX_VS_BIT)))  // 0x00
+
+#define WORD4(b)          (((uint32_t)(b)) * 0x01010101u)
+
+#define SYNC_IDLE         WORD4(VGA_BYTE_IDLE)
+#define SYNC_HSYNC        WORD4(VGA_BYTE_HSYNC)
+#define SYNC_VSYNC        WORD4(VGA_BYTE_VSYNC)
+#define SYNC_VHSYNC       WORD4(VGA_BYTE_VHSYNC)
+
+// ============================================================================
+// State
+// ============================================================================
+
+uint16_t frame_width = 0;
+uint16_t frame_height = 0;
+volatile uint32_t video_frame_count = 0;
+
+// RGB565 pixels written by the scanline callback (shared scratch buffer).
+static uint32_t line_buffer[MODE_H_ACTIVE_PIXELS / 2] __attribute__((aligned(4)));
+
+// FIFO-ready pixel data: 1 pixel per 32-bit word (byte replicated to all 4
+// bytes so SEL_P sees the same byte regardless of rotation phase).
+// Ping-pong to overlap conversion with DMA transfer of the previous line.
+static uint32_t pixel_buf_a[MODE_H_ACTIVE_PIXELS] __attribute__((aligned(4)));
+static uint32_t pixel_buf_b[MODE_H_ACTIVE_PIXELS] __attribute__((aligned(4)));
+
+static uint32_t v_scanline = 2;
+static bool vactive_cmdlist_posted = false;
+static bool dma_pong = false;
+
+static video_output_task_fn background_task = NULL;
+static video_output_scanline_cb_t scanline_callback = NULL;
+static video_output_vsync_cb_t vsync_callback = NULL;
+
+#define DMACH_PING 0
+#define DMACH_PONG 1
+
+// ============================================================================
+// Command Lists
+// ============================================================================
+
+// VBlank, VS inactive: idle front porch, HS pulse, idle back porch + "active".
+static uint32_t vblank_line_vsync_off[] = {
+    HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,                     SYNC_IDLE,   HSTX_CMD_NOP,
+    HSTX_CMD_RAW_REPEAT | MODE_H_SYNC_WIDTH,                      SYNC_HSYNC,  HSTX_CMD_NOP,
+    HSTX_CMD_RAW_REPEAT | (MODE_H_BACK_PORCH + MODE_H_ACTIVE_PIXELS),
+                                                                  SYNC_IDLE,   HSTX_CMD_NOP
+};
+
+// VBlank, VS active: VS asserted throughout, HS pulse as usual.
+static uint32_t vblank_line_vsync_on[] = {
+    HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,                     SYNC_VSYNC,  HSTX_CMD_NOP,
+    HSTX_CMD_RAW_REPEAT | MODE_H_SYNC_WIDTH,                      SYNC_VHSYNC, HSTX_CMD_NOP,
+    HSTX_CMD_RAW_REPEAT | (MODE_H_BACK_PORCH + MODE_H_ACTIVE_PIXELS),
+                                                                  SYNC_VSYNC,  HSTX_CMD_NOP
+};
+
+// Active line header (front porch, HS pulse, back porch, then RAW pixels).
+// The RAW command is followed by DMA-fed pixel data (next DMA transfer).
+static uint32_t vactive_line_header[] = {
+    HSTX_CMD_RAW_REPEAT | MODE_H_FRONT_PORCH,                     SYNC_IDLE,   HSTX_CMD_NOP,
+    HSTX_CMD_RAW_REPEAT | MODE_H_SYNC_WIDTH,                      SYNC_HSYNC,  HSTX_CMD_NOP,
+    HSTX_CMD_RAW_REPEAT | MODE_H_BACK_PORCH,                      SYNC_IDLE,
+    HSTX_CMD_RAW | MODE_H_ACTIVE_PIXELS
+};
+
+// ============================================================================
+// RGB565 -> VGA byte conversion
+// ============================================================================
+//
+// Packed two pixels per uint32_t (the HDMI driver's line_buffer convention).
+//   word[15: 0] = pixel 2k   (RGB565 in low halfword)
+//   word[31:16] = pixel 2k+1 (RGB565 in high halfword)
+//
+// RGB565 layout: RRRRR GGGGGG BBBBB
+// Take top 2 bits of each channel, OR with VGA_BYTE_IDLE (HS=VS=1).
+
+static inline uint32_t __scratch_x("vga") rgb565_to_vga_word(uint16_t rgb565)
+{
+    uint32_t r = (rgb565 >> 14) & 0x3;
+    uint32_t g = (rgb565 >> 9) & 0x3;
+    uint32_t b = (rgb565 >> 3) & 0x3;
+    uint8_t byte = (uint8_t)(VGA_BYTE_IDLE | (r << 4) | (g << 2) | b);
+    return WORD4(byte);
+}
+
+static void __scratch_x("vga") convert_line_rgb565_to_vga(const uint32_t *src, uint32_t *dst)
+{
+    for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS / 2; i++) {
+        uint32_t w = src[i];
+        dst[2 * i + 0] = rgb565_to_vga_word((uint16_t)(w & 0xFFFF));
+        dst[2 * i + 1] = rgb565_to_vga_word((uint16_t)(w >> 16));
+    }
+}
+
+#ifdef VGA_HSTX_TEST_PATTERN
+// Paint 8 vertical color bars (SMPTE-style) into the active-pixel buffer.
+// Byte format: HS=1 VS=1 (idle) | RR GG BB. RGB colors are RGB222 so each
+// channel value is in 0..3. Use max-brightness primaries:
+//   white, yellow, cyan, green, magenta, red, blue, black
+static void __scratch_x("vga") paint_test_pattern(uint32_t *dst, uint32_t active_line)
+{
+    (void)active_line;
+    static const uint8_t bar_rgb222[8] = {
+        (3 << 4) | (3 << 2) | 3, // white
+        (3 << 4) | (3 << 2) | 0, // yellow
+        (0 << 4) | (3 << 2) | 3, // cyan
+        (0 << 4) | (3 << 2) | 0, // green
+        (3 << 4) | (0 << 2) | 3, // magenta
+        (3 << 4) | (0 << 2) | 0, // red
+        (0 << 4) | (0 << 2) | 3, // blue
+        (0 << 4) | (0 << 2) | 0, // black
+    };
+    const uint32_t bar_width = MODE_H_ACTIVE_PIXELS / 8;
+    for (uint32_t bar = 0; bar < 8; bar++) {
+        uint8_t byte = (uint8_t)(VGA_BYTE_IDLE | bar_rgb222[bar]);
+        uint32_t word = WORD4(byte);
+        uint32_t start = bar * bar_width;
+        uint32_t end = start + bar_width;
+        for (uint32_t x = start; x < end; x++)
+            dst[x] = word;
+    }
+}
+#endif
+
+// ============================================================================
+// Scanline state
+// ============================================================================
+
+typedef struct {
+    bool vsync_active;
+    bool front_porch;
+    bool back_porch;
+    bool active_video;
+    uint32_t active_line;
+} scanline_state_t;
+
+static inline void __scratch_x("vga") get_scanline_state(uint32_t line, scanline_state_t *state)
+{
+    state->vsync_active = (line >= MODE_V_FRONT_PORCH && line < (MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH));
+    state->front_porch = (line < MODE_V_FRONT_PORCH);
+    state->back_porch = (line >= MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH &&
+                        line < MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + MODE_V_BACK_PORCH);
+    state->active_video = (!state->vsync_active && !state->front_porch && !state->back_porch);
+    state->active_line = state->active_video ? (line - (MODE_V_TOTAL_LINES - MODE_V_ACTIVE_LINES)) : 0;
+}
+
+// ============================================================================
+// DMA IRQ handler
+// ============================================================================
+
+void __scratch_x("vga") dma_irq_handler(void)
+{
+    uint32_t ch_num = dma_pong ? DMACH_PONG : DMACH_PING;
+    dma_channel_hw_t *ch = &dma_hw->ch[ch_num];
+    dma_hw->intr = 1U << ch_num;
+    dma_pong = !dma_pong;
+
+    scanline_state_t s;
+    get_scanline_state(v_scanline, &s);
+
+    if (s.vsync_active) {
+        ch->read_addr = (uintptr_t)vblank_line_vsync_on;
+        ch->transfer_count = count_of(vblank_line_vsync_on);
+        if (v_scanline == MODE_V_FRONT_PORCH) {
+            video_frame_count++;
+            if (vsync_callback)
+                vsync_callback();
+        }
+    } else if (s.active_video && !vactive_cmdlist_posted) {
+        uint32_t *pixbuf = dma_pong ? pixel_buf_a : pixel_buf_b;
+#ifdef VGA_HSTX_TEST_PATTERN
+        // Driver-isolated SMPTE color bars. The scanline callback is ignored.
+        paint_test_pattern(pixbuf, s.active_line);
+#else
+        // Ask host to fill the RGB565 line buffer, then convert.
+        if (scanline_callback) {
+            scanline_callback(v_scanline, s.active_line, line_buffer);
+        } else {
+            memset(line_buffer, 0, sizeof(line_buffer));
+        }
+        convert_line_rgb565_to_vga(line_buffer, pixbuf);
+#endif
+
+        ch->read_addr = (uintptr_t)vactive_line_header;
+        ch->transfer_count = count_of(vactive_line_header);
+        vactive_cmdlist_posted = true;
+    } else if (s.active_video && vactive_cmdlist_posted) {
+        // Follow-up DMA for the active pixel data.
+        uint32_t *pixbuf = dma_pong ? pixel_buf_a : pixel_buf_b;
+        ch->read_addr = (uintptr_t)pixbuf;
+        ch->transfer_count = MODE_H_ACTIVE_PIXELS;
+        vactive_cmdlist_posted = false;
+    } else {
+        // Blanking (front porch or back porch), VS inactive.
+        ch->read_addr = (uintptr_t)vblank_line_vsync_off;
+        ch->transfer_count = count_of(vblank_line_vsync_off);
+    }
+
+    if (!vactive_cmdlist_posted)
+        v_scanline = (v_scanline + 1) % MODE_V_TOTAL_LINES;
+}
+
+// ============================================================================
+// Public interface
+// ============================================================================
+
+void video_output_init(uint16_t width, uint16_t height)
+{
+    frame_width = width;
+    frame_height = height;
+
+    // Run clk_hstx at clk_sys (divider 1). With clk_sys = 252 MHz this gives
+    // clk_hstx = 252 MHz, which combined with CSR.CLKDIV=4 and
+    // CSR.N_SHIFTS = phase_repeats yields the 25.2 MHz VGA pixel clock for
+    // 640x480 @ 60 Hz (phase_repeats = clk_hstx / pixelclock = 10).
+    uint32_t sys_freq = clock_get_hz(clk_sys);
+    clock_configure_int_divider(clk_hstx, 0, CLOCKS_CLK_HSTX_CTRL_AUXSRC_VALUE_CLK_SYS, sys_freq, 1);
+
+    dma_channel_claim(DMACH_PING);
+    dma_channel_claim(DMACH_PONG);
+
+    // Pre-fill both pixel buffers with idle so stray DMA before the first
+    // callback doesn't blank HS/VS.
+    for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS; i++) {
+        pixel_buf_a[i] = SYNC_IDLE;
+        pixel_buf_b[i] = SYNC_IDLE;
+    }
+}
+
+void video_output_set_background_task(video_output_task_fn task)
+{
+    background_task = task;
+}
+
+void video_output_set_scanline_callback(video_output_scanline_cb_t cb)
+{
+    scanline_callback = cb;
+}
+
+void video_output_set_vsync_callback(video_output_vsync_cb_t cb)
+{
+    vsync_callback = cb;
+}
+
+void pico_hdmi_set_audio_sample_rate(uint32_t sample_rate)
+{
+    (void)sample_rate;  // VGA has no audio path.
+}
+
+void video_output_core1_run(void)
+{
+    // HSTX core config for VGA 640x480 @ 60 Hz (quakegeneric dvi_hstx reference):
+    //
+    //   clk_hstx = 252 MHz (direct from clk_sys)
+    //   CSR.CLKDIV = 4      → serial output bit rate = clk_hstx / 4 = 63 MHz
+    //   CSR.N_SHIFTS = 10   → pop FIFO every 10 shifts → pixel clock = 63 / (10/... )
+    //                         actual: pixel rate = clk_hstx / (CLKDIV * N_SHIFTS / CSR.SHIFT-stride)
+    //                         empirically 25.2 MHz pixel clock with these values.
+    //   CSR.SHIFT = 16      → shift register rotates by 16 each serial cycle.
+    //
+    // Pin mapping uses SEL_P=i, SEL_N=i+8: first half of the HSTX clock
+    // period drives bit i, second half drives bit i+8. Because the shift
+    // register rotates by 16 per serial cycle, bits 0..15 of each pixel's
+    // 32-bit word encode the output pattern for that whole pixel period.
+    //
+    // The sync bytes we emit are replicated across all four bytes of the
+    // 32-bit word (see WORD4), so every byte position presents the same
+    // HS/VS/RGB bits to the output regardless of rotation phase.
+    hstx_ctrl_hw->csr = 0;
+    hstx_ctrl_hw->csr = HSTX_CTRL_CSR_EXPAND_EN_BITS |
+                        (4u  << HSTX_CTRL_CSR_CLKDIV_LSB) |
+                        (10u << HSTX_CTRL_CSR_N_SHIFTS_LSB) |
+                        (16u << HSTX_CTRL_CSR_SHIFT_LSB) |
+                        HSTX_CTRL_CSR_EN_BITS;
+
+    // Command expander: RAW / RAW_REPEAT emit one 32-bit word per pixel.
+    hstx_ctrl_hw->expand_shift =
+        (1u << HSTX_CTRL_EXPAND_SHIFT_ENC_N_SHIFTS_LSB) |
+        (0u << HSTX_CTRL_EXPAND_SHIFT_ENC_SHIFT_LSB) |
+        (1u << HSTX_CTRL_EXPAND_SHIFT_RAW_N_SHIFTS_LSB) |
+        (0u << HSTX_CTRL_EXPAND_SHIFT_RAW_SHIFT_LSB);
+
+    // Pin -> shift register bit mapping. Each GPIO selects bit n for the
+    // first half of the HSTX serial period and bit n+8 for the second half.
+    // (See quakegeneric drivers/dvi_hstx/dvi.c :: vga_configure_hstx_output.)
+    //   GPIO 12 = B0 -> bits 0 / 8
+    //   GPIO 13 = B1 -> bits 1 / 9
+    //   GPIO 14 = G0 -> bits 2 / 10
+    //   GPIO 15 = G1 -> bits 3 / 11
+    //   GPIO 16 = R0 -> bits 4 / 12
+    //   GPIO 17 = R1 -> bits 5 / 13
+    //   GPIO 18 = HS -> bits 6 / 14
+    //   GPIO 19 = VS -> bits 7 / 15
+    for (uint32_t i = 0; i < VGA_HSTX_PIN_COUNT; i++) {
+        hstx_ctrl_hw->bit[i] = (i << HSTX_CTRL_BIT0_SEL_P_LSB) |
+                               ((i + 8) << HSTX_CTRL_BIT0_SEL_N_LSB);
+    }
+
+    for (uint32_t i = 0; i < VGA_HSTX_PIN_COUNT; i++) {
+        gpio_set_function(VGA_HSTX_PIN_BASE + i, 0);  // HSTX function
+    }
+
+    // DMA: ping-pong chained channels feeding HSTX FIFO via DREQ_HSTX.
+    dma_channel_config c = dma_channel_get_default_config(DMACH_PING);
+    channel_config_set_chain_to(&c, DMACH_PONG);
+    channel_config_set_dreq(&c, DREQ_HSTX);
+    dma_channel_configure(DMACH_PING, &c, &hstx_fifo_hw->fifo, vblank_line_vsync_off,
+                          count_of(vblank_line_vsync_off), false);
+
+    c = dma_channel_get_default_config(DMACH_PONG);
+    channel_config_set_chain_to(&c, DMACH_PING);
+    channel_config_set_dreq(&c, DREQ_HSTX);
+    dma_channel_configure(DMACH_PONG, &c, &hstx_fifo_hw->fifo, vblank_line_vsync_off,
+                          count_of(vblank_line_vsync_off), false);
+
+    dma_hw->ints0 = (1U << DMACH_PING) | (1U << DMACH_PONG);
+    dma_hw->inte0 = (1U << DMACH_PING) | (1U << DMACH_PONG);
+    irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
+    irq_set_priority(DMA_IRQ_0, 0);
+    irq_set_enabled(DMA_IRQ_0, true);
+
+    bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS |
+                            BUSCTRL_BUS_PRIORITY_PROC1_BITS;
+    dma_channel_start(DMACH_PING);
+
+    while (1) {
+        if (background_task) {
+            background_task();
+        }
+        tight_loop_contents();
+    }
+}

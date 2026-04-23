@@ -9,6 +9,8 @@
 #include "hdmi.h"
 #elif defined(VIDEO_COMPOSITE)
 #include "graphics.h"
+#elif defined(VGA_HSTX)
+#include "pico_vga_hstx/video_output.h"
 #else
 #include "pico_hdmi/hstx_data_island_queue.h"
 #include "pico_hdmi/hstx_packet.h"
@@ -164,7 +166,7 @@ static void soft_copy_frame(const uint8_t *src, long pitch) {
  */
 static int audio_frame_counter = 0;
 
-#if !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
+#if !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO) && !defined(VGA_HSTX)
 /* ─── HDMI audio: encode mono NES samples into Data Island packets ─── */
 static int16_t audio_carry[3];
 static int audio_carry_count = 0;
@@ -301,7 +303,7 @@ static const int16_t *apply_volume(const int16_t *buf, int count) {
 static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int count)
 {
     if (g_settings.audio_mode == AUDIO_MODE_DISABLED) {
-#if !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
+#if !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO) && !defined(VGA_HSTX)
         hdmi_fill_silence(count);
 #endif
         return;
@@ -310,12 +312,12 @@ static void __not_in_flash("audio") audio_push_samples(const int16_t *buf, int c
     if (g_settings.audio_mode == AUDIO_MODE_PWM) {
         ensure_pwm_audio_initialized();
         pwm_audio_push_samples(out, count);
-#if !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
+#if !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO) && !defined(VGA_HSTX)
         hdmi_fill_silence(count);
 #endif
         return;
     }
-#if defined(VIDEO_COMPOSITE) || defined(HDMI_PIO)
+#if defined(VIDEO_COMPOSITE) || defined(HDMI_PIO) || defined(VGA_HSTX)
     ensure_i2s_initialized();
     i2s_audio_push_samples(out, count);
 #else
@@ -338,7 +340,7 @@ void audio_fill_silence(int count)
         sleep_us((uint64_t)count * 1000000 / SAMPLE_RATE);
         return;
     }
-#if defined(VIDEO_COMPOSITE) || defined(HDMI_PIO)
+#if defined(VIDEO_COMPOSITE) || defined(HDMI_PIO) || defined(VGA_HSTX)
     ensure_i2s_initialized();
     i2s_audio_fill_silence(count);
 #else
@@ -868,20 +870,24 @@ static void real_main(void)
     sleep_ms(200);
     audio_fill_silence(SAMPLE_RATE / 60 * 6);
 #else
-    /* Start HSTX HDMI */
+    /* Start HSTX HDMI or HSTX VGA (M2 only) */
     frame_pixels = test_pixels;
     frame_pitch = NES_WIDTH;
 
+#if !defined(VGA_HSTX)
     hstx_di_queue_init();
+#endif
     audio_fill_silence(SAMPLE_RATE / 60 * 6); /* pre-fill ~100ms */
     video_output_set_vsync_callback(vsync_cb);
     video_output_init(FRAME_WIDTH, FRAME_HEIGHT);
 
-    /* Derive clk_hstx from pll_sys (252 MHz / 2 = 126 MHz).
-     * pll_usb stays at 48 MHz for USB CDC serial and TinyUSB. */
+#if !defined(VGA_HSTX)
+    /* HDMI: derive clk_hstx from pll_sys (252 MHz / 2 = 126 MHz).
+     * VGA: driver configures clk_hstx = clk_sys = 252 MHz directly. */
     clock_configure(clk_hstx, 0,
                     CLOCKS_CLK_HSTX_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
                     clock_get_hz(clk_sys), 126000000);
+#endif
 
     pico_hdmi_set_audio_sample_rate(SAMPLE_RATE);
     video_output_set_scanline_callback(scanline_callback);
