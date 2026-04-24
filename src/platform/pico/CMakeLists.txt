@@ -159,6 +159,7 @@ elseif(VIDEO_COMPOSITE)
 elseif(VGA_HSTX)
     # HSTX clocked from PLL_SYS / 2 = 126MHz (reconfigured in main)
     add_compile_definitions(MODE_HSTX_CLK_DIV=1)
+    add_subdirectory(${DRIVERSDIR}/disphstx disphstx)
     add_subdirectory(${DRIVERSDIR}/pico_vga_hstx pico_vga_hstx)
     option(VGA_HSTX_TEST_PATTERN "Replace NES output with SMPTE color bars (driver isolation test)" OFF)
     option(VGA_HSTX_NOOP_ACTIVE "Replace the active-line fill with no-op (IRQ stays fast). Should show whatever was in pixel_buf at boot: black (pre-filled)." OFF)
@@ -339,6 +340,14 @@ else()
 endif()
 pico_enable_stdio_uart(frank-nes 0)
 target_link_libraries(frank-nes hardware_uart)
+
+# DispHSTX (VGA) auto-allocates a 300 KB framebuffer via malloc — default
+# 2 KB heap is nowhere near enough. Bump to 320 KB for VGA_HSTX builds.
+if(VGA_HSTX)
+    target_compile_definitions(frank-nes PRIVATE
+        PICO_HEAP_SIZE=327680
+    )
+endif()
 
 # Optional: embed NES ROM into flash
 if(DEFINED NES_ROM_PATH)

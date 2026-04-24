@@ -14,4 +14,5 @@ target_link_libraries(pico_vga_hstx INTERFACE
     hardware_dma
     hardware_gpio
     hardware_irq
+    disphstx
 )

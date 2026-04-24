@@ -773,7 +773,13 @@ static int ps2kbd_to_qnes(uint16_t kbd)
 
 static void real_main(void)
 {
-#if !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
+#if defined(VGA_HSTX)
+    /* VGA_HSTX: let DispHSTX configure the system clock itself — it sets
+     * sys_clk to the videomode's sysclk (126 MHz for DispVMode640x480x8)
+     * and configures flash timings / vreg accordingly. We leave the default
+     * SDK 150 MHz boot clock so DispHSTX's "return to default" logic is a
+     * no-op. */
+#elif !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
     /* HSTX: 252 MHz, HSTX clock = 252 / 2 = 126 MHz */
     vreg_disable_voltage_limit();
     vreg_set_voltage(VREG_VOLTAGE_1_60);
@@ -797,6 +803,18 @@ static void real_main(void)
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 1);
+
+#if defined(VGA_HSTX)
+    /* Call DispHSTX exactly like the demo's main() — nothing else. */
+    extern void vga_hstx_early_test(void);
+    vga_hstx_early_test();
+    while (1) {
+        gpio_put(PICO_DEFAULT_LED_PIN, 1);
+        sleep_ms(500);
+        gpio_put(PICO_DEFAULT_LED_PIN, 0);
+        sleep_ms(500);
+    }
+#endif
 
     paint_stack();
 
@@ -891,7 +909,13 @@ static void real_main(void)
 
     pico_hdmi_set_audio_sample_rate(SAMPLE_RATE);
     video_output_set_scanline_callback(scanline_callback);
+#if defined(VGA_HSTX)
+    /* DispHSTX already kicked Core 1 from video_output_init() running on
+     * Core 0. Launching Core 1 again here would race/fail silently. */
+    (void)video_output_core1_run;
+#else
     multicore_launch_core1(video_output_core1_run);
+#endif
     sleep_ms(100);
 #endif
 
