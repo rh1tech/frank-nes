@@ -26,6 +26,8 @@
 #include "hardware/clocks.h"
 #include "hardware/pll.h"
 #include "hardware/vreg.h"
+#include "hardware/watchdog.h"
+#include "hardware/structs/watchdog.h"
 #include "hardware/structs/qmi.h"
 #include "hardware/structs/xip_ctrl.h"
 
@@ -362,6 +364,8 @@ void video_post_frame(const uint8_t *pixels, long pitch) {
             memcpy(&tv_framebuf[y * NES_WIDTH], pixels + y * pitch, NES_WIDTH);
 #elif defined(HDMI_PIO)
     soft_copy_frame(pixels, pitch);
+#elif defined(VGA_HSTX)
+    vga_hstx_post_frame(pixels, pitch);
 #else
     pending_pitch = pitch;
     pending_pixels = pixels;
@@ -374,6 +378,9 @@ void video_wait_vsync(void) {
 #endif
 #if defined(VIDEO_COMPOSITE) || defined(HDMI_PIO)
     sleep_ms(1);
+#elif defined(VGA_HSTX)
+    /* Blit pending NES frame into DispHSTX framebuffer now. */
+    vga_hstx_service();
 #else
     while (pending_pixels != NULL) {
         __wfe();
@@ -469,6 +476,10 @@ static void update_palette(int buf_idx)
         uint16_t c16 = ((c->r & 0xF8) << 8) | ((c->g & 0xFC) << 3) | (c->b >> 3);
         rgb565_palette_32[buf_idx][i] = c16 | ((uint32_t)c16 << 16);
     }
+#if defined(VGA_HSTX)
+    /* Also rebuild RGB332 palette for the DispHSTX framebuffer. */
+    vga_hstx_update_palette(buf_idx, pal, pal_size, colors);
+#endif
 }
 
 /* Scanline callback: convert indexed pixels to RGB565, doubled to 640x480
@@ -684,31 +695,57 @@ void __attribute__((naked)) isr_hardfault(void)
     );
 }
 
+/* Stash fault info in watchdog scratch regs (survive warm reset) so
+ * the next boot can report it over USB-CDC, which is far more reliable
+ * than trying to print from inside the fault handler itself. */
+#define FAULT_MAGIC 0xFA0171ED  /* "FAULTED" */
+
 void __attribute__((used)) hardfault_handler_c(uint32_t *stack)
 {
-    fault_pc = stack[6];
-    fault_lr = stack[5];
-    fault_cfsr = *(volatile uint32_t *)0xE000ED28;
+    fault_pc    = stack[6];
+    fault_lr    = stack[5];
+    fault_cfsr  = *(volatile uint32_t *)0xE000ED28;
     fault_mmfar = *(volatile uint32_t *)0xE000ED34;
-    fault_bfar = *(volatile uint32_t *)0xE000ED38;
+    fault_bfar  = *(volatile uint32_t *)0xE000ED38;
     fault_occurred = true;
 
-    /* Re-enable interrupts so USB can flush */
-    __asm volatile ("CPSIE i");
+    watchdog_hw->scratch[0] = FAULT_MAGIC;
+    watchdog_hw->scratch[1] = fault_pc;
+    watchdog_hw->scratch[2] = fault_lr;
+    watchdog_hw->scratch[3] = fault_cfsr;
+    watchdog_hw->scratch[4] = fault_mmfar;
+    watchdog_hw->scratch[5] = fault_bfar;
+    watchdog_hw->scratch[6] = (uint32_t)stack;  /* faulting SP */
+    watchdog_hw->scratch[7] = stack[7];         /* xPSR */
 
-    for (int attempt = 0; attempt < 20; attempt++) {
-        printf("!FAULT! PC=%08lx LR=%08lx CFSR=%08lx MMFAR=%08lx BFAR=%08lx stk=%lu\n",
-               (unsigned long)fault_pc, (unsigned long)fault_lr,
-               (unsigned long)fault_cfsr, (unsigned long)fault_mmfar,
-               (unsigned long)fault_bfar, (unsigned long)check_stack_free());
-        for (volatile int d = 0; d < 2000000; d++) {} /* busy delay */
-    }
+    /* Arm a short watchdog and spin — warm-reset, scratch regs survive. */
+    watchdog_reboot(0, 0, 100);
+    while (1) tight_loop_contents();
+}
 
-    while (1) {
-        gpio_put(PICO_DEFAULT_LED_PIN, 1);
-        for (volatile int d = 0; d < 500000; d++) {}
-        gpio_put(PICO_DEFAULT_LED_PIN, 0);
-        for (volatile int d = 0; d < 500000; d++) {}
+/* Called from real_main() right after stdio is up. If a fault occurred in
+ * the previous run, dump the captured info so we can see PC/LR over CDC. */
+static void report_previous_fault(void)
+{
+    if (watchdog_hw->scratch[0] != FAULT_MAGIC) return;
+
+    uint32_t pc    = watchdog_hw->scratch[1];
+    uint32_t lr    = watchdog_hw->scratch[2];
+    uint32_t cfsr  = watchdog_hw->scratch[3];
+    uint32_t mmfar = watchdog_hw->scratch[4];
+    uint32_t bfar  = watchdog_hw->scratch[5];
+    uint32_t sp    = watchdog_hw->scratch[6];
+    uint32_t xpsr  = watchdog_hw->scratch[7];
+
+    /* Clear so we only report once per real fault. */
+    watchdog_hw->scratch[0] = 0;
+
+    for (int i = 0; i < 30; i++) {
+        printf("!PREV_FAULT! PC=%08lx LR=%08lx CFSR=%08lx MMFAR=%08lx BFAR=%08lx SP=%08lx xPSR=%08lx\n",
+               (unsigned long)pc, (unsigned long)lr, (unsigned long)cfsr,
+               (unsigned long)mmfar, (unsigned long)bfar,
+               (unsigned long)sp, (unsigned long)xpsr);
+        sleep_ms(200);
     }
 }
 
@@ -774,11 +811,8 @@ static int ps2kbd_to_qnes(uint16_t kbd)
 static void real_main(void)
 {
 #if defined(VGA_HSTX)
-    /* VGA_HSTX: let DispHSTX configure the system clock itself — it sets
-     * sys_clk to the videomode's sysclk (126 MHz for DispVMode640x480x8)
-     * and configures flash timings / vreg accordingly. We leave the default
-     * SDK 150 MHz boot clock so DispHSTX's "return to default" logic is a
-     * no-op. */
+    /* Leave SDK boot-default clock (150 MHz). DispHSTX reconfigures as
+     * needed. */
 #elif !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
     /* HSTX: 252 MHz, HSTX clock = 252 / 2 = 126 MHz */
     vreg_disable_voltage_limit();
@@ -800,20 +834,18 @@ static void real_main(void)
     stdio_init_all();
     uart_logging_init();
     uart_logging_register();
+
+    /* Dump previous-run fault info over CDC before any other init, so even
+     * early boot crashes are debuggable. Survives via watchdog scratch regs. */
+    report_previous_fault();
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 1);
 
 #if defined(VGA_HSTX)
-    /* Call DispHSTX exactly like the demo's main() — nothing else. */
-    extern void vga_hstx_early_test(void);
-    vga_hstx_early_test();
-    while (1) {
-        gpio_put(PICO_DEFAULT_LED_PIN, 1);
-        sleep_ms(500);
-        gpio_put(PICO_DEFAULT_LED_PIN, 0);
-        sleep_ms(500);
-    }
+    /* Bring up DispHSTX before any other peripheral — it owns Core 1
+     * and configures sys_clock itself. */
+    vga_hstx_start();
 #endif
 
     paint_stack();
@@ -1012,7 +1044,12 @@ static void real_main(void)
     if (rom_loaded) {
         bool reset_requested = false;
         while (1) {
-#if !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
+#if defined(VGA_HSTX)
+            /* DispHSTX VGA runs its own framebuffer scanout on Core 1.
+             * Blit the previously-posted frame here so the next emulation
+             * iteration can deliver a new one. */
+            vga_hstx_service();
+#elif !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
             /* Wait for vsync — Core 1 applies pending frame during vblank. */
             while (pending_pixels != NULL) {
 #if USB_HID_ENABLED
@@ -1149,6 +1186,8 @@ static void real_main(void)
             tv_copy_frame(qnes_get_pixels(), 272);
 #elif defined(HDMI_PIO)
             soft_copy_frame(qnes_get_pixels(), 272);
+#elif defined(VGA_HSTX)
+            vga_hstx_post_frame(qnes_get_pixels(), 272);
 #else
             pending_pitch = 272;
             pending_pixels = qnes_get_pixels();

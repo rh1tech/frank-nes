@@ -338,14 +338,24 @@ if(USB_HID_ENABLED)
 else()
     pico_enable_stdio_usb(frank-nes 1)
 endif()
-pico_enable_stdio_uart(frank-nes 0)
+if(VGA_HSTX)
+    # Also pipe stdio to UART0 so the picoprobe can forward it even when
+    # USB isn't available (e.g. during hardfault before USB comes up).
+    pico_enable_stdio_uart(frank-nes 1)
+else()
+    pico_enable_stdio_uart(frank-nes 0)
+endif()
 target_link_libraries(frank-nes hardware_uart)
 
-# DispHSTX (VGA) auto-allocates a 300 KB framebuffer via malloc — default
-# 2 KB heap is nowhere near enough. Bump to 320 KB for VGA_HSTX builds.
+# DispHSTX only needs ~8 KB of heap (internal palette tables) when we
+# pass it a static framebuffer. But QuickNES mapper allocations (VRC4 et al)
+# can request 16+ KB chunks for PPU impl_t — bump to 96 KB and drop the
+# second QuickNES pixel buffer (64 KB BSS saved) to stay inside the 512 KB
+# SRAM budget alongside the 76 KB DispHSTX framebuffer.
 if(VGA_HSTX)
     target_compile_definitions(frank-nes PRIVATE
-        PICO_HEAP_SIZE=327680
+        PICO_HEAP_SIZE=81920
+        QNES_SINGLE_PIXEL_BUF
     )
 endif()
 

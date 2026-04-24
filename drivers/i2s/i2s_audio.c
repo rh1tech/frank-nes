@@ -20,8 +20,13 @@
 #include <string.h>
 #include <stdio.h>
 
-/* Use DMA_IRQ_1 to avoid conflict with HDMI's DMA_IRQ_0 */
+/* HDMI HSTX driver uses DMA_IRQ_0; DispHSTX VGA driver uses DMA_IRQ_1.
+ * Pick the other one so audio I2S never clashes. */
+#if defined(VGA_HSTX)
+#define AUDIO_DMA_IRQ   DMA_IRQ_0
+#else
 #define AUDIO_DMA_IRQ   DMA_IRQ_1
+#endif
 #define AUDIO_DMA_CH_A  10
 #define AUDIO_DMA_CH_B  11
 
@@ -41,19 +46,31 @@ static uint i2s_sm;
 static uint32_t dma_xfer_count;
 
 static void i2s_dma_irq_handler(void) {
+#if defined(VGA_HSTX)
+    uint32_t ints = dma_hw->ints0;
+#else
     uint32_t ints = dma_hw->ints1;
+#endif
     uint32_t mask = (1u << AUDIO_DMA_CH_A) | (1u << AUDIO_DMA_CH_B);
     ints &= mask;
     if (!ints) return;
 
     if (ints & (1u << AUDIO_DMA_CH_A)) {
+#if defined(VGA_HSTX)
+        dma_hw->ints0 = (1u << AUDIO_DMA_CH_A);
+#else
         dma_hw->ints1 = (1u << AUDIO_DMA_CH_A);
+#endif
         dma_channel_set_read_addr(AUDIO_DMA_CH_A, dma_bufs[0], false);
         dma_channel_set_trans_count(AUDIO_DMA_CH_A, dma_xfer_count, false);
         bufs_free_mask |= 1u;
     }
     if (ints & (1u << AUDIO_DMA_CH_B)) {
+#if defined(VGA_HSTX)
+        dma_hw->ints0 = (1u << AUDIO_DMA_CH_B);
+#else
         dma_hw->ints1 = (1u << AUDIO_DMA_CH_B);
+#endif
         dma_channel_set_read_addr(AUDIO_DMA_CH_B, dma_bufs[1], false);
         dma_channel_set_trans_count(AUDIO_DMA_CH_B, dma_xfer_count, false);
         bufs_free_mask |= 2u;
@@ -134,13 +151,24 @@ void i2s_audio_init(uint data_pin, uint clock_pin_base, uint32_t sample_rate) {
     dma_channel_configure(AUDIO_DMA_CH_B, &cfg_b, &i2s_pio->txf[i2s_sm],
                           dma_bufs[1], dma_xfer_count, false);
 
-    /* DMA IRQ1 handler */
+    /* DMA IRQ handler — route DMA channels to whichever of IRQ0/IRQ1
+     * isn't claimed by the video driver (IRQ_0 for HDMI HSTX, IRQ_1 for
+     * DispHSTX VGA). AUDIO_DMA_IRQ is selected above. */
+#if defined(VGA_HSTX)
+    dma_hw->ints0 = (1u << AUDIO_DMA_CH_A) | (1u << AUDIO_DMA_CH_B);
+#else
     dma_hw->ints1 = (1u << AUDIO_DMA_CH_A) | (1u << AUDIO_DMA_CH_B);
+#endif
     irq_set_exclusive_handler(AUDIO_DMA_IRQ, i2s_dma_irq_handler);
     irq_set_priority(AUDIO_DMA_IRQ, 0x80);
     irq_set_enabled(AUDIO_DMA_IRQ, true);
+#if defined(VGA_HSTX)
+    dma_channel_set_irq0_enabled(AUDIO_DMA_CH_A, true);
+    dma_channel_set_irq0_enabled(AUDIO_DMA_CH_B, true);
+#else
     dma_channel_set_irq1_enabled(AUDIO_DMA_CH_A, true);
     dma_channel_set_irq1_enabled(AUDIO_DMA_CH_B, true);
+#endif
 
     /* Enable PIO state machine */
     pio_sm_set_enabled(i2s_pio, i2s_sm, true);
@@ -237,6 +265,17 @@ void i2s_audio_shutdown(void) {
     pio_sm_set_enabled(i2s_pio, i2s_sm, false);
     irq_set_enabled(AUDIO_DMA_IRQ, false);
 
+#if defined(VGA_HSTX)
+    dma_channel_set_irq0_enabled(AUDIO_DMA_CH_A, false);
+    dma_channel_abort(AUDIO_DMA_CH_A);
+    dma_hw->ints0 = (1u << AUDIO_DMA_CH_A);
+    dma_channel_unclaim(AUDIO_DMA_CH_A);
+
+    dma_channel_set_irq0_enabled(AUDIO_DMA_CH_B, false);
+    dma_channel_abort(AUDIO_DMA_CH_B);
+    dma_hw->ints0 = (1u << AUDIO_DMA_CH_B);
+    dma_channel_unclaim(AUDIO_DMA_CH_B);
+#else
     dma_channel_set_irq1_enabled(AUDIO_DMA_CH_A, false);
     dma_channel_abort(AUDIO_DMA_CH_A);
     dma_hw->ints1 = (1u << AUDIO_DMA_CH_A);
@@ -246,6 +285,7 @@ void i2s_audio_shutdown(void) {
     dma_channel_abort(AUDIO_DMA_CH_B);
     dma_hw->ints1 = (1u << AUDIO_DMA_CH_B);
     dma_channel_unclaim(AUDIO_DMA_CH_B);
+#endif
 
     bufs_free_mask = (1u << DMA_BUFFER_COUNT) - 1u;
     preroll_count = 0;

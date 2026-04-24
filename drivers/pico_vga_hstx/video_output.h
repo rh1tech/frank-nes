@@ -101,4 +101,21 @@ void video_output_core1_run(void);
  */
 void pico_hdmi_set_audio_sample_rate(uint32_t sample_rate);
 
+/** Bring up DispHSTX on Core 0 before any other peripheral init. */
+void vga_hstx_start(void);
+
+/** Post a new NES frame (256x240 8-bit indexed) to be blitted on next service. */
+void vga_hstx_post_frame(const uint8_t *pixels, long pitch);
+
+/** Service pending frame: called from the main emulation loop on Core 0. */
+void vga_hstx_service(void);
+
+/** Rebuild RGB332 palette from QuickNES frame palette + color table. */
+void vga_hstx_update_palette(int buf_idx, const int16_t *pal, int pal_size,
+                             const void *colors);
+
+/** Rebuild RGB332 palette from the 256-entry rgb565_palette_32 buffer
+ *  (used by menu/selector screens that draw in RGB565 palette space). */
+void vga_hstx_update_palette_from_rgb565(const uint32_t *pal_rgb565, int count);
+
 #endif // PICO_VGA_HSTX_VIDEO_OUTPUT_H

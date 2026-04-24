@@ -2,49 +2,52 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Pico Debug (Cortex-Debug)",
-            "cwd": "${userHome}/.pico-sdk/openocd/0.12.0+dev/scripts",
-            "executable": "${command:raspberry-pi-pico.launchTargetPath}",
+            "name": "Pico Debug (load + run)",
+            "cwd": "${workspaceRoot}",
+            "executable": "${workspaceRoot}/build/frank-nes.elf",
             "request": "launch",
             "type": "cortex-debug",
             "servertype": "openocd",
-            "serverpath": "${userHome}/.pico-sdk/openocd/0.12.0+dev/openocd.exe",
-            "gdbPath": "${command:raspberry-pi-pico.getGDBPath}",
-            "device": "${command:raspberry-pi-pico.getChipUppercase}",
+            "serverpath": "${userHome}/.pico-sdk/openocd/0.12.0+dev/openocd",
+            "searchDir": ["${userHome}/.pico-sdk/openocd/0.12.0+dev/scripts"],
+            "gdbPath": "${userHome}/.pico-sdk/toolchain/14_2_Rel1/bin/arm-none-eabi-gdb",
+            "device": "RP2350",
             "configFiles": [
                 "interface/cmsis-dap.cfg",
-                "target/${command:raspberry-pi-pico.getTarget}.cfg"
+                "target/rp2350.cfg"
             ],
-            "svdFile": "${userHome}/.pico-sdk/sdk/2.2.0/src/${command:raspberry-pi-pico.getChip}/hardware_regs/${command:raspberry-pi-pico.getChipUppercase}.svd",
+            "svdFile": "${userHome}/.pico-sdk/sdk/2.2.0/src/rp2350/hardware_regs/RP2350.svd",
             "runToEntryPoint": "main",
-            // Fix for no_flash binaries, where monitor reset halt doesn't do what is expected
-            // Also works fine for flash binaries
             "overrideLaunchCommands": [
                 "monitor reset init",
-                "load \"${command:raspberry-pi-pico.launchTargetPath}\""
+                "load \"${workspaceRoot}/build/frank-nes.elf\""
             ],
             "openOCDLaunchCommands": [
                 "adapter speed 5000"
             ]
         },
         {
-            "name": "Pico Debug (Cortex-Debug with external OpenOCD)",
+            "name": "Pico Attach (catch hardfault)",
             "cwd": "${workspaceRoot}",
-            "executable": "${command:raspberry-pi-pico.launchTargetPath}",
-            "request": "launch",
+            "executable": "${workspaceRoot}/build/frank-nes.elf",
+            "request": "attach",
             "type": "cortex-debug",
-            "servertype": "external",
-            "gdbTarget": "localhost:3333",
-            "gdbPath": "${command:raspberry-pi-pico.getGDBPath}",
-            "device": "${command:raspberry-pi-pico.getChipUppercase}",
-            "svdFile": "${userHome}/.pico-sdk/sdk/2.2.0/src/${command:raspberry-pi-pico.getChip}/hardware_regs/${command:raspberry-pi-pico.getChipUppercase}.svd",
-            "runToEntryPoint": "main",
-            // Fix for no_flash binaries, where monitor reset halt doesn't do what is expected
-            // Also works fine for flash binaries
-            "overrideLaunchCommands": [
-                "monitor reset init",
-                "load \"${command:raspberry-pi-pico.launchTargetPath}\""
+            "servertype": "openocd",
+            "serverpath": "${userHome}/.pico-sdk/openocd/0.12.0+dev/openocd",
+            "searchDir": ["${userHome}/.pico-sdk/openocd/0.12.0+dev/scripts"],
+            "gdbPath": "${userHome}/.pico-sdk/toolchain/14_2_Rel1/bin/arm-none-eabi-gdb",
+            "device": "RP2350",
+            "configFiles": [
+                "interface/cmsis-dap.cfg",
+                "target/rp2350.cfg"
+            ],
+            "svdFile": "${userHome}/.pico-sdk/sdk/2.2.0/src/rp2350/hardware_regs/RP2350.svd",
+            "openOCDLaunchCommands": [
+                "adapter speed 5000"
+            ],
+            "postAttachCommands": [
+                "monitor halt"
             ]
-        },
+        }
     ]
 }

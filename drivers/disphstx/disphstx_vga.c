@@ -865,6 +865,13 @@ void DispHstxVgaStart()
 	// run VGA core
 	Core1Exec(DispHstxVgaCore);
 
+	// Core1Exec/multicore_launch_core1 returns when BOOTROM acknowledges,
+	// which is BEFORE Core 1 actually executes DispHstxVgaCore and reaches
+	// the REQINIT wait loop. If we flip REQINIT immediately, Core 1 can miss
+	// it (still in BOOTROM handshake) and REQINIT stays latched, never
+	// reaching REQNO. Wait long enough for Core 1 to reach the polling loop.
+	sleep_ms(10);
+
 	// initialize VGA
 	DispHstxVgaReq = DISPHSTX_VGA_REQINIT;
 	dmb();
