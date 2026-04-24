@@ -83,20 +83,29 @@ static uint32_t line_buffer[LINE_RING_SLOTS][MODE_H_ACTIVE_PIXELS / 2]
 
 // FIFO-ready pixel data: 1 pixel per 32-bit word (byte replicated to all 4
 // bytes so SEL_P sees the same byte regardless of rotation phase).
-// Ring of pre-converted lines. Producer (background task on Core 1) fills
-// slot `pixel_ring_produce_slot` for the line it's converting; the DMA IRQ
-// consumes from `pixel_ring_consume_slot` when the next active line fires.
-// Slots that are ready have `pixel_ring_line[slot]` set to the active-line
-// index they were converted for; -1 means empty.
+//
+// Producer/consumer synchronize via monotonically advancing sequence
+// numbers. Each sequence number names one line-doubled producer line (NES
+// line × 2 = VGA active line pair). Slot index = seq % LINE_RING_SLOTS.
+//
+// pixel_ring_seq[slot] holds the sequence number of the data currently in
+// that slot, or (uint32_t)-1 if empty. The consumer matches on strict
+// equality, so stale data can never be mistaken for a fresh line.
+//
+// Critically, NEITHER counter is ever reset — the IRQ used to clear ring
+// state at vsync start, which races with the producer's three-write
+// commit sequence and occasionally left the ring in a wedged state where
+// the consumer served black indefinitely until the monitor lost sync.
+// With monotonic counters the producer catches up to the consumer after
+// any stall by skipping forward, no cross-core reset needed.
 static uint32_t pixel_ring[LINE_RING_SLOTS][MODE_H_ACTIVE_PIXELS]
     __attribute__((aligned(4)));
-static volatile int32_t pixel_ring_line[LINE_RING_SLOTS];
-static volatile uint32_t pixel_ring_produce_slot;
-static volatile uint32_t pixel_ring_consume_slot;
+static volatile uint32_t pixel_ring_seq[LINE_RING_SLOTS];
+static volatile uint32_t produce_seq;  // producer's next seq to fill
+static volatile uint32_t consume_seq;  // consumer's next seq to display
 
-// Active line the producer must fill next. Advanced atomically by the
-// producer after each conversion.
-static volatile uint32_t next_line_to_convert;
+// Number of producer lines per frame (480 VGA active / 2 doubling).
+#define PRODUCER_LINES_PER_FRAME (MODE_V_ACTIVE_LINES / 2)
 
 // Solid-black filler used when the ring underflows.
 static uint32_t black_line[MODE_H_ACTIVE_PIXELS] __attribute__((aligned(4)));
@@ -241,13 +250,6 @@ void __scratch_x("vga") dma_irq_handler(void)
         ch->transfer_count = count_of(vblank_line_vsync_on);
         if (v_scanline == MODE_V_FRONT_PORCH) {
             video_frame_count++;
-            // Reset producer ring at frame start so the background task
-            // starts filling from active_line = 0.
-            for (uint32_t i = 0; i < LINE_RING_SLOTS; i++)
-                pixel_ring_line[i] = -1;
-            pixel_ring_produce_slot = 0;
-            pixel_ring_consume_slot = 0;
-            next_line_to_convert = 0;
             if (vsync_callback)
                 vsync_callback();
         }
@@ -259,35 +261,24 @@ void __scratch_x("vga") dma_irq_handler(void)
         ch->transfer_count = count_of(vactive_line_header);
         vactive_cmdlist_posted = true;
     } else if (s.active_video && vactive_cmdlist_posted) {
-        // Follow-up DMA for the active pixel data. Each converted line is
-        // displayed twice (line-doubled) to halve the producer workload:
-        //   active_line 2k     -> consume slot (fresh from producer)
-        //   active_line 2k + 1 -> replay the same slot, then release it
+        // Follow-up DMA for the active pixel data.
         //
-        // If the producer falls behind, drain stale slots (produced_line <
-        // wanted) so the ring can resync — the previous behavior held on to
-        // the stale slot forever and caused a visible signal drop during
-        // busy gameplay frames.
+        // Each converted line is displayed twice (line-doubled). We consume
+        // the slot whose sequence number matches our expected consume_seq;
+        // on the odd VGA line we then advance consume_seq so the next pair
+        // picks up the next producer line. On underflow (producer hasn't
+        // filled it yet) we fall back to black_line AND advance consume_seq
+        // anyway, so the consumer never sticks waiting for a slot the
+        // producer has already skipped past.
         uint32_t *pixbuf = black_line;
-        uint32_t wanted = s.active_line >> 1;  // producer line index
-        for (uint32_t tries = 0; tries < LINE_RING_SLOTS; tries++) {
-            uint32_t slot = pixel_ring_consume_slot;
-            int32_t produced_line = pixel_ring_line[slot];
-            if (produced_line < 0)
-                break;  // slot empty → underflow, fall back to black
-            if ((uint32_t)produced_line == wanted) {
-                pixbuf = pixel_ring[slot];
-                if (s.active_line & 1) {
-                    pixel_ring_line[slot] = -1;
-                    pixel_ring_consume_slot = (slot + 1) % LINE_RING_SLOTS;
-                }
-                break;
-            }
-            if ((uint32_t)produced_line > wanted)
-                break;  // future slot; wait for vsync to resync
-            // produced_line < wanted → stale, drop it and retry next slot
-            pixel_ring_line[slot] = -1;
-            pixel_ring_consume_slot = (slot + 1) % LINE_RING_SLOTS;
+        uint32_t want = consume_seq;
+        uint32_t slot = want % LINE_RING_SLOTS;
+        if (pixel_ring_seq[slot] == want) {
+            pixbuf = pixel_ring[slot];
+        }
+        if (s.active_line & 1) {
+            // odd VGA line: advance to next producer line next time
+            consume_seq = want + 1;
         }
         ch->read_addr = (uintptr_t)pixbuf;
         ch->transfer_count = MODE_H_ACTIVE_PIXELS;
@@ -325,31 +316,42 @@ void video_output_init(uint16_t width, uint16_t height)
     for (uint32_t i = 0; i < MODE_H_ACTIVE_PIXELS; i++)
         black_line[i] = SYNC_IDLE;
 
-    // Ring state.
+    // Ring state: mark every slot empty (sequence number that can never be
+    // requested). Producer and consumer both start at 0.
     for (uint32_t i = 0; i < LINE_RING_SLOTS; i++)
-        pixel_ring_line[i] = -1;
-    pixel_ring_produce_slot = 0;
-    pixel_ring_consume_slot = 0;
-    next_line_to_convert = 0;
+        pixel_ring_seq[i] = (uint32_t)-1;
+    produce_seq = 0;
+    consume_seq = 0;
 }
 
 // Producer: convert the next scheduled active line if ring has space. Called
-// from Core 1's background loop on every iteration. Does nothing if the
-// producer has already filled every slot and the IRQ hasn't drained any.
+// from Core 1's background loop on every iteration. Does nothing if the ring
+// is full; jumps forward if the consumer has raced ahead of us (stall
+// recovery — keeps the consumer/producer seqs aligned to mod-4 slots).
 static __attribute__((noinline)) void __scratch_x("vga") producer_task(void)
 {
-    uint32_t slot = pixel_ring_produce_slot;
-    if (pixel_ring_line[slot] != -1)
-        return;  // ring full, IRQ hasn't consumed this slot yet
+    uint32_t p_seq = produce_seq;
+    uint32_t c_seq = consume_seq;
 
-    uint32_t active_line = next_line_to_convert;
-    // Each converted line is displayed twice (line-doubled): we only need to
-    // produce half as many lines per frame.
-    if (active_line >= MODE_V_ACTIVE_LINES / 2) {
-        // We've converted this whole frame already; wait for vsync to reset.
-        return;
+    // If the consumer has moved past us (we stalled long enough that several
+    // scanlines passed without their slot being filled), jump forward to
+    // c_seq. The consumer will have already served black for the missed
+    // lines; now we need to make sure we don't re-fill old slots with data
+    // destined for scanlines that are already gone.
+    if ((int32_t)(c_seq - p_seq) > 0) {
+        p_seq = c_seq;
     }
 
+    // Don't get more than LINE_RING_SLOTS-1 ahead (leaves one slot free so
+    // the slot the consumer is currently reading won't be overwritten).
+    if ((int32_t)(p_seq - c_seq) >= LINE_RING_SLOTS)
+        return;
+
+    // Render modulo the frame: seq % PRODUCER_LINES_PER_FRAME gives the NES
+    // line to pull from. The consumer's seq matches because both march at
+    // the same rate (one increment per active-line pair).
+    uint32_t active_line = p_seq % PRODUCER_LINES_PER_FRAME;
+    uint32_t slot = p_seq % LINE_RING_SLOTS;
     uint32_t *line16 = line_buffer[slot];
 
 #if defined(VGA_HSTX_TEST_PATTERN)
@@ -395,9 +397,12 @@ static __attribute__((noinline)) void __scratch_x("vga") producer_task(void)
     convert_line_rgb565_to_vga(line16, pixel_ring[slot]);
 #endif
 
-    pixel_ring_line[slot] = (int32_t)active_line;
-    pixel_ring_produce_slot = (slot + 1) % LINE_RING_SLOTS;
-    next_line_to_convert = active_line + 1;
+    // Publish: write the sequence number LAST, and after a memory barrier,
+    // so the consumer observing pixel_ring_seq[slot] == want is guaranteed
+    // to see fully-written pixel data in pixel_ring[slot].
+    __compiler_memory_barrier();
+    pixel_ring_seq[slot] = p_seq;
+    produce_seq = p_seq + 1;
 }
 
 void video_output_set_background_task(video_output_task_fn task)
@@ -474,15 +479,19 @@ void video_output_core1_run(void)
     }
 
     // DMA: ping-pong chained channels feeding HSTX FIFO via DREQ_HSTX.
+    // Both marked high-priority so the HSTX FIFO refill always wins bus
+    // arbitration against any DMA Core 0 might run (SD card, I2S audio).
     dma_channel_config c = dma_channel_get_default_config(DMACH_PING);
     channel_config_set_chain_to(&c, DMACH_PONG);
     channel_config_set_dreq(&c, DREQ_HSTX);
+    channel_config_set_high_priority(&c, true);
     dma_channel_configure(DMACH_PING, &c, &hstx_fifo_hw->fifo, vblank_line_vsync_off,
                           count_of(vblank_line_vsync_off), false);
 
     c = dma_channel_get_default_config(DMACH_PONG);
     channel_config_set_chain_to(&c, DMACH_PING);
     channel_config_set_dreq(&c, DREQ_HSTX);
+    channel_config_set_high_priority(&c, true);
     dma_channel_configure(DMACH_PONG, &c, &hstx_fifo_hw->fifo, vblank_line_vsync_off,
                           count_of(vblank_line_vsync_off), false);
 
