@@ -132,38 +132,43 @@ void init_spi(void)
 	 * only reset CS and drain FIFOs so the card can be re-enumerated. */
 	static bool pio_spi_initialized = false;
 	if (!pio_spi_initialized) {
-	    gpio_init(SDCARD_PIN_SPI0_SCK);
-	    gpio_init(SDCARD_PIN_SPI0_MISO);
-	    gpio_pull_up(SDCARD_PIN_SPI0_MISO);
-	    gpio_init(SDCARD_PIN_SPI0_MOSI);
-	    gpio_pull_up(SDCARD_PIN_SPI0_MOSI);
-	    gpio_init(SDCARD_PIN_SPI0_CS);
-	    gpio_set_dir(SDCARD_PIN_SPI0_CS, GPIO_OUT);
-	    CS_HIGH();
+		gpio_init(SDCARD_PIN_SPI0_SCK);
+		gpio_init(SDCARD_PIN_SPI0_MISO);
+		gpio_pull_up(SDCARD_PIN_SPI0_MISO);
+		gpio_init(SDCARD_PIN_SPI0_MOSI);
+		gpio_pull_up(SDCARD_PIN_SPI0_MOSI);
+		gpio_init(SDCARD_PIN_SPI0_CS);
+		gpio_set_dir(SDCARD_PIN_SPI0_CS, GPIO_OUT);
+		CS_HIGH();
 
-	    gpio_set_dir(SDCARD_PIN_SPI0_SCK, GPIO_OUT);
-	    gpio_set_dir(SDCARD_PIN_SPI0_MISO, GPIO_OUT);
-	    gpio_set_dir(SDCARD_PIN_SPI0_MOSI, GPIO_OUT);
+		gpio_set_dir(SDCARD_PIN_SPI0_SCK, GPIO_OUT);
+		gpio_set_dir(SDCARD_PIN_SPI0_MISO, GPIO_OUT);
+		gpio_set_dir(SDCARD_PIN_SPI0_MOSI, GPIO_OUT);
 
-	    float clkdiv = 3.0f;
-	    int cpol = 0;
-	    int cpha = 0;
-	    uint cpha0_prog_offs = pio_add_program(pio_spi.pio, &spi_cpha0_program);
-	    pio_spi_init(pio_spi.pio, pio_spi.sm,
-	                cpha0_prog_offs,
-	                8,       // 8 bits per SPI frame
-	                clkdiv,
-	                cpha,
-	                cpol,
-	                SDCARD_PIN_SPI0_SCK,
-	                SDCARD_PIN_SPI0_MOSI,
-	                SDCARD_PIN_SPI0_MISO
-	    );
-	    pio_spi_initialized = true;
+		/* Reserve SM before loading program. pio_spi_init does not claim,
+		 * so without this another driver's pio_claim_unused_sm could race
+		 * onto our SM. */
+		pio_sm_claim(pio_spi.pio, pio_spi.sm);
+
+		float clkdiv = 3.0f;
+		int cpol = 0;
+		int cpha = 0;
+		uint cpha0_prog_offs = pio_add_program(pio_spi.pio, &spi_cpha0_program);
+		pio_spi_init(pio_spi.pio, pio_spi.sm,
+		            cpha0_prog_offs,
+		            8,       // 8 bits per SPI frame
+		            clkdiv,
+		            cpha,
+		            cpol,
+		            SDCARD_PIN_SPI0_SCK,
+		            SDCARD_PIN_SPI0_MOSI,
+		            SDCARD_PIN_SPI0_MISO
+		);
+		pio_spi_initialized = true;
 	} else {
-	    /* Quiesce: release CS, drain any stale bytes from FIFOs */
-	    CS_HIGH();
-	    pio_sm_clear_fifos(pio_spi.pio, pio_spi.sm);
+		/* Quiesce: release CS, drain any stale bytes from FIFOs */
+		CS_HIGH();
+		pio_sm_clear_fifos(pio_spi.pio, pio_spi.sm);
 	}
 #else
 	/* GPIO pin configuration */
