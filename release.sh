@@ -7,8 +7,8 @@
 #
 # Output format: <prefix>frank-nes_A_BB_<video>.uf2
 #
-# Build matrix (8 variants):
-#   m2p2_frank-nes_*_hdmi_hstx, m2p2_*_hdmi_vga, m2p2_*_tv
+# Build matrix (9 variants):
+#   m2p2_frank-nes_*_hdmi_hstx, m2p2_*_hdmi_vga, m2p2_*_vga_hstx, m2p2_*_tv
 #   m1p2_frank-nes_*_hdmi_vga, m1p2_*_tv
 #   pcp2_frank-nes_*_hdmi_hstx
 #   dvp2_frank-nes_*_hdmi_vga
@@ -31,6 +31,7 @@ NC='\033[0m' # No Color
 BUILD_MATRIX=(
     "m2:m2p2_:hdmi_hstx:"
     "m2:m2p2_:hdmi_vga:-DHDMI_PIO=ON"
+    "m2:m2p2_:vga_hstx:-DVGA_HSTX=ON"
     "m2:m2p2_:tv:-DVIDEO_COMPOSITE=ON"
     "m1:m1p2_:hdmi_vga:"
     "m1:m1p2_:tv:-DVIDEO_COMPOSITE=ON"
@@ -65,7 +66,7 @@ echo -e "${CYAN}│                     frank-nes Release Builder               
 echo -e "${CYAN}└─────────────────────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "Last version: ${YELLOW}${LAST_MAJOR}.$(printf '%02d' $LAST_MINOR)${NC}"
-echo -e "Variants: ${CYAN}${#BUILD_MATRIX[@]}${NC} (m2x3, m1x2, pc, dv, z0)"
+echo -e "Variants: ${CYAN}${#BUILD_MATRIX[@]}${NC} (m2x4, m1x2, pc, dv, z0)"
 echo ""
 
 DEFAULT_VERSION="${NEXT_MAJOR}.$(printf '%02d' $NEXT_MINOR)"
