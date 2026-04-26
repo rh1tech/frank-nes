@@ -99,8 +99,6 @@ typedef enum {
     EMU_MENU_SPRITE_LIMIT,  /* PPU */
     EMU_MENU_BG_DISABLED,
     EMU_MENU_OVERSCAN,      /* video */
-    EMU_MENU_SCANLINES,
-    EMU_MENU_PAR,
     EMU_MENU_PALETTE,
     EMU_MENU_AUDIO_EQ,      /* audio */
     EMU_MENU_MUTE_PULSE1,   /* per-channel 2A03 mutes */
@@ -147,15 +145,7 @@ static const char *audio_eq_ini_names[] = {"nes", "famicom", "tv", "flat", "cris
 static const char *overscan_names[] = {"OFF", "8 PX", "16 PX"};
 static const char *overscan_ini_names[] = {"off", "8", "16"};
 
-/* Scanline effect labels (must match SCANLINES_*) */
-static const char *scanlines_names[] = {"OFF", "25%", "50%", "75%"};
-static const char *scanlines_ini_names[] = {"off", "25", "50", "75"};
-
-/* Pixel aspect labels */
-static const char *par_names[] = {"1:1", "8:7"};
-static const char *par_ini_names[] = {"1:1", "8:7"};
-
-/* Palette labels (PALETTE_CUSTOM is reserved for Batch 3 and skipped in UI) */
+/* Palette labels */
 static const char *palette_names[] = {"NES", "FIREBRANDX", "WAVEBEAM", "COMPOSITE", "CUSTOM"};
 static const char *palette_ini_names[] = {"nes", "firebrandx", "wavebeam", "composite", "custom"};
 
@@ -202,8 +192,6 @@ settings_t g_settings = {
     .sprite_limit = 1,
     .audio_eq = AUDIO_EQ_NES,
     .overscan = OVERSCAN_OFF,
-    .scanlines = SCANLINES_OFF,
-    .par = PAR_1_1,
     .palette = PALETTE_NES,
     .turbo_a = TURBO_OFF,
     .turbo_b = TURBO_OFF,
@@ -367,8 +355,6 @@ static const char *get_emu_menu_label(emu_menu_item_t item) {
         case EMU_MENU_SPRITE_LIMIT:  return "SPRITE LIMIT";
         case EMU_MENU_BG_DISABLED:   return "BACKGROUND";
         case EMU_MENU_OVERSCAN:      return "OVERSCAN";
-        case EMU_MENU_SCANLINES:     return "SCANLINES";
-        case EMU_MENU_PAR:           return "ASPECT";
         case EMU_MENU_PALETTE:       return "PALETTE";
         case EMU_MENU_AUDIO_EQ:      return "AUDIO EQ";
         case EMU_MENU_MUTE_PULSE1:   return "MUTE PULSE 1";
@@ -429,8 +415,6 @@ static const char *get_emu_value_text(emu_menu_item_t item) {
          * the user has asked to hide it (bg_disabled=1). */
         case EMU_MENU_BG_DISABLED:   return on_off_names[edit_settings.bg_disabled ? 0 : 1];
         case EMU_MENU_OVERSCAN:      return overscan_names[edit_settings.overscan < OVERSCAN_COUNT ? edit_settings.overscan : 0];
-        case EMU_MENU_SCANLINES:     return scanlines_names[edit_settings.scanlines < SCANLINES_COUNT ? edit_settings.scanlines : 0];
-        case EMU_MENU_PAR:           return par_names[edit_settings.par < PAR_COUNT ? edit_settings.par : 0];
         case EMU_MENU_PALETTE:       return palette_names[edit_settings.palette < PALETTE_COUNT ? edit_settings.palette : 0];
         case EMU_MENU_AUDIO_EQ:
             return audio_eq_names[edit_settings.audio_eq < AUDIO_EQ_COUNT ? edit_settings.audio_eq : 0];
@@ -567,12 +551,6 @@ static void change_emu_value(emu_menu_item_t item, int dir) {
             break;
         case EMU_MENU_OVERSCAN:
             edit_settings.overscan = (uint8_t)((edit_settings.overscan + OVERSCAN_COUNT + dir) % OVERSCAN_COUNT);
-            break;
-        case EMU_MENU_SCANLINES:
-            edit_settings.scanlines = (uint8_t)((edit_settings.scanlines + SCANLINES_COUNT + dir) % SCANLINES_COUNT);
-            break;
-        case EMU_MENU_PAR:
-            edit_settings.par = (uint8_t)((edit_settings.par + PAR_COUNT + dir) % PAR_COUNT);
             break;
         case EMU_MENU_PALETTE:
             edit_settings.palette = cycle_palette(edit_settings.palette, dir);
@@ -1113,22 +1091,6 @@ void settings_load(void) {
                 }
             }
         }
-        else if (parse_ini_line(line, "scanlines", value, sizeof(value))) {
-            for (int i = 0; i < SCANLINES_COUNT; i++) {
-                if (strcmp(value, scanlines_ini_names[i]) == 0) {
-                    g_settings.scanlines = (uint8_t)i;
-                    break;
-                }
-            }
-        }
-        else if (parse_ini_line(line, "par", value, sizeof(value))) {
-            for (int i = 0; i < PAR_COUNT; i++) {
-                if (strcmp(value, par_ini_names[i]) == 0) {
-                    g_settings.par = (uint8_t)i;
-                    break;
-                }
-            }
-        }
         else if (parse_ini_line(line, "palette", value, sizeof(value))) {
             for (int i = 0; i < PALETTE_COUNT; i++) {
                 if (strcmp(value, palette_ini_names[i]) == 0) {
@@ -1259,8 +1221,6 @@ void settings_save(void) {
         "mode = %s\n"
         "sprite_limit = %s\n"
         "overscan = %s\n"
-        "scanlines = %s\n"
-        "par = %s\n"
         "palette = %s\n"
         "turbo_a = %s\n"
         "turbo_b = %s\n"
@@ -1279,8 +1239,6 @@ void settings_save(void) {
         emu_mode_ini_names[g_settings.emu_mode < EMULATION_MODE_COUNT ? g_settings.emu_mode : 0],
         g_settings.sprite_limit ? "on" : "off",
         overscan_ini_names[g_settings.overscan < OVERSCAN_COUNT ? g_settings.overscan : 0],
-        scanlines_ini_names[g_settings.scanlines < SCANLINES_COUNT ? g_settings.scanlines : 0],
-        par_ini_names[g_settings.par < PAR_COUNT ? g_settings.par : 0],
         palette_ini_names[g_settings.palette < PALETTE_COUNT ? g_settings.palette : 0],
         turbo_ini_names[g_settings.turbo_a < TURBO_COUNT ? g_settings.turbo_a : 0],
         turbo_ini_names[g_settings.turbo_b < TURBO_COUNT ? g_settings.turbo_b : 0],

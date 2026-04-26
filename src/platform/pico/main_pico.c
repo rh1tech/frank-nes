@@ -489,17 +489,6 @@ static int apply_override_line(const char *line)
         else                                                  g_settings.overscan = OVERSCAN_8;
         return 1;
     }
-    if (KEY_IS("scanlines")) {
-        if (strcmp(val, "off") == 0)      g_settings.scanlines = SCANLINES_OFF;
-        else if (strcmp(val, "25") == 0)  g_settings.scanlines = SCANLINES_25;
-        else if (strcmp(val, "50") == 0)  g_settings.scanlines = SCANLINES_50;
-        else if (strcmp(val, "75") == 0)  g_settings.scanlines = SCANLINES_75;
-        return 1;
-    }
-    if (KEY_IS("par") || KEY_IS("aspect")) {
-        g_settings.par = (strcmp(val, "8:7") == 0) ? PAR_8_7 : PAR_1_1;
-        return 1;
-    }
     if (KEY_IS("audio_eq")) {
         int idx = AUDIO_EQ_NES;
         if (strcmp(val, "famicom") == 0) idx = AUDIO_EQ_FAMICOM;
@@ -676,13 +665,7 @@ static void apply_cheat_file(void) {
 }
 
 /* Push settings into the runtime state they affect. Called at startup
- * (after settings_load) and after every settings_menu_show() return.
- *
- * SCANLINES and ASPECT are persisted and shown in the Emulation submenu
- * but are not wired to the display path — the in-ISR implementation in
- * v1.07b1 broke HDMI signal lock on real hardware. Rendering those two
- * will land in a later batch with a Core 1 pipeline that does not have
- * to fit inside the scanline ISR's cycle budget. */
+ * (after settings_load) and after every settings_menu_show() return. */
 static void apply_runtime_settings(void) {
     scanline_overscan_px = overscan_enum_to_px(g_settings.overscan);
     /* Palette change: update_palette() reads g_settings.palette every
@@ -779,10 +762,7 @@ static void update_palette(int buf_idx)
 #if !defined(VGA_HSTX)
 /* Scanline callback: convert indexed pixels to RGB565, doubled to 640x480.
  * Runs on Core 1 DMA ISR — must be in RAM, no flash access, and the
- * per-scanline work budget is tight. A small number of extra writes here
- * (adding SCANLINES / 8:7 PAR branches in-place) were enough to drop
- * HDMI lock on real hardware in v1.07b1, so those features are reserved
- * for a separate render path that will be wired up outside the ISR. */
+ * per-scanline work budget is tight. Keep this path minimal. */
 void __not_in_flash("scanline") scanline_callback(
     uint32_t v_scanline, uint32_t active_line, uint32_t *dst)
 {
