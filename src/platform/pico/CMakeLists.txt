@@ -406,10 +406,19 @@ if(DEFINED NES_ROM_PATH)
     )
 endif()
 
-# Read version from version.txt (format: "MAJOR MINOR", e.g. "1 00" -> "1.00")
+# Read version from version.txt (format: "MAJOR MINOR", e.g. "1 7" -> "1.07").
+# Minor is zero-padded to two digits so the welcome screen and UF2 names stay
+# in a stable width regardless of whether release.sh wrote "7" or "07".
 file(READ "${PROJECT_ROOT}/version.txt" FRANK_NES_VERSION_RAW)
 string(STRIP "${FRANK_NES_VERSION_RAW}" FRANK_NES_VERSION_RAW)
-string(REPLACE " " "." FRANK_NES_VERSION_STR "${FRANK_NES_VERSION_RAW}")
+string(REPLACE " " ";" FRANK_NES_VERSION_PARTS "${FRANK_NES_VERSION_RAW}")
+list(GET FRANK_NES_VERSION_PARTS 0 FRANK_NES_VERSION_MAJOR)
+list(GET FRANK_NES_VERSION_PARTS 1 FRANK_NES_VERSION_MINOR)
+string(LENGTH "${FRANK_NES_VERSION_MINOR}" _frank_minor_len)
+if(_frank_minor_len LESS 2)
+    set(FRANK_NES_VERSION_MINOR "0${FRANK_NES_VERSION_MINOR}")
+endif()
+set(FRANK_NES_VERSION_STR "${FRANK_NES_VERSION_MAJOR}.${FRANK_NES_VERSION_MINOR}")
 target_compile_definitions(frank-nes PRIVATE FRANK_NES_VERSION="${FRANK_NES_VERSION_STR}")
 
 pico_add_extra_outputs(frank-nes)
