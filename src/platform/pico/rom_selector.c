@@ -2262,18 +2262,21 @@ static inline uint8_t cube_rgb(int r, int g, int b) {
 static uint8_t tunnel_palette[256];
 
 /* Build the tunnel colour ramp once: index = (u + v + xor_ring) & 0xFF,
- * ramp sweeps dark indigo → violet → magenta → pink and back. */
+ * ramp sweeps deep indigo → muted violet → dark magenta and back. Kept
+ * in the low half of the 6×6×6 cube so the animation reads as an
+ * atmospheric backdrop rather than foreground competition for the logo
+ * and text. Max channel intensity ≈ level 2/5 of the cube ≈ 40% brightness. */
 static void build_tunnel_palette(void) {
     for (int i = 0; i < 256; i++) {
         /* Triangle wave in [0, 127] so the ramp wraps seamlessly. */
         int t = i < 128 ? i : 255 - i;
-        /* Phase-shifted sinusoid-ish curves without calling sinf. */
-        int r = (t * 7) / 127;
-        int g = ((t < 48 ? 0 : (t - 48)) * 4) / 80;
-        int b = ((127 - t) * 7) / 127;
-        if (r > 7) r = 7;
-        if (g > 7) g = 7;
-        if (b > 7) b = 7;
+        /* Dark ramp: max r=2, g=1, b=2 (out of 7) → cube levels 1–2. */
+        int r = (t * 2) / 127;
+        int g = ((t < 64 ? 0 : (t - 64)) * 1) / 63;
+        int b = ((127 - t) * 2) / 127;
+        if (r > 2) r = 2;
+        if (g > 1) g = 1;
+        if (b > 2) b = 2;
         tunnel_palette[i] = cube_rgb(r, g, b);
     }
 }
