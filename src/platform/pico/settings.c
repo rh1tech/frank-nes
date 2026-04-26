@@ -53,15 +53,21 @@ extern void video_sync_palette_from_rgb565(int buf_idx);
 #define MENU_TITLE_Y 24
 #define MENU_START_Y 52
 #define MENU_X 24
-#define VALUE_X 140
+/* Values column shifted two character cells (2 * FONT_WIDTH = 12 px) left
+ * so the trailing "<…>" marker clears the scrollbar in the right margin. */
+#define VALUE_X 128
 
 /* Palette indices for menu rendering */
-#define PAL_BG      1
-#define PAL_WHITE   2
-#define PAL_YELLOW  3
-#define PAL_GRAY       4
-#define PAL_DARKGRAY   5
-#define PAL_THUMB_BASE 6
+#define PAL_BG          1
+#define PAL_WHITE       2
+#define PAL_YELLOW      3
+#define PAL_GRAY        4
+#define PAL_DARKGRAY    5
+/* Scrollbar track colour — brighter than PAL_DARKGRAY so the empty part
+ * of the scrollbar reads as a track instead of blending into the empty
+ * save-slot tiles. Kept distinct so slot rendering isn't affected. */
+#define PAL_SCROLLTRACK 6
+#define PAL_THUMB_BASE  7
 
 /* Save slot constants */
 #define NUM_SLOTS  6
@@ -662,7 +668,13 @@ static void change_emu_value(emu_menu_item_t item, int dir) {
 
 /* ─── Menu drawing ────────────────────────────────────────────────── */
 
-static void draw_settings_menu(uint8_t *screen, int selected) {
+/* Vertical viewport for the top-level settings menu. Rows are a mix of
+ * 12 px regular items and 18 px separators, so this is a worst-case cap
+ * that keeps the content above the help line at y=220. Scrolling kicks in
+ * once the list stops fitting — same behavior as the EMULATION submenu. */
+#define SETTINGS_MENU_VIEW_ROWS 11
+
+static void draw_settings_menu(uint8_t *screen, int selected, int scroll_top) {
     /* Clear screen */
     memset(screen, PAL_BG, SCREEN_WIDTH * SCREEN_HEIGHT);
 
@@ -674,9 +686,16 @@ static void draw_settings_menu(uint8_t *screen, int selected) {
     /* Separator below title */
     draw_hline(screen, MENU_X, MENU_TITLE_Y + FONT_HEIGHT + 4, SCREEN_WIDTH - 2 * MENU_X, PAL_GRAY);
 
-    /* Menu items */
+    int rows = SETTINGS_MENU_VIEW_ROWS;
+    if (rows > MENU_ITEM_COUNT) rows = MENU_ITEM_COUNT;
+    int last_top = MENU_ITEM_COUNT - rows;
+    if (scroll_top < 0) scroll_top = 0;
+    if (scroll_top > last_top) scroll_top = last_top;
+
+    /* Menu items — only render rows inside the scroll window */
     int y = MENU_START_Y;
-    for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+    for (int row = 0; row < rows; row++) {
+        int i = scroll_top + row;
         menu_item_t item = (menu_item_t)i;
 
         if (item == MENU_SEPARATOR1 || item == MENU_SEPARATOR2 || item == MENU_SEPARATOR3) {
@@ -710,10 +729,44 @@ static void draw_settings_menu(uint8_t *screen, int selected) {
         y += LINE_HEIGHT;
     }
 
+    /* Scrollbar (right margin) — mirrors the EMULATION submenu style.
+     * Only drawn when the list actually overflows. Track is dim, thumb
+     * is bright and sized/positioned by the visible fraction. */
+    if (MENU_ITEM_COUNT > rows) {
+        const int bar_w = 3;
+        const int bar_x = SCREEN_WIDTH - MENU_X + 6;
+        const int bar_y = MENU_START_Y;
+        /* Height based on the actual rendered height so the thumb maps
+         * cleanly onto the content, separators included. */
+        const int bar_h = y - MENU_START_Y;
+
+        fill_rect(screen, bar_x, bar_y, bar_w, bar_h, PAL_SCROLLTRACK);
+
+        int thumb_h = (bar_h * rows) / MENU_ITEM_COUNT;
+        if (thumb_h < 8) thumb_h = 8;
+        if (thumb_h > bar_h) thumb_h = bar_h;
+        int thumb_range = bar_h - thumb_h;
+        int thumb_off = last_top > 0 ? (thumb_range * scroll_top) / last_top : 0;
+        fill_rect(screen, bar_x, bar_y + thumb_off, bar_w, thumb_h, PAL_WHITE);
+    }
+
     /* Help text at bottom */
     const char *help = "UP/DOWN:SELECT  LEFT/RIGHT:CHANGE";
     int help_x = (SCREEN_WIDTH - (int)strlen(help) * FONT_WIDTH) / 2;
     draw_text(screen, help_x, 220, help, PAL_GRAY);
+}
+
+/* Slide the window so `selected` stays inside it — same behavior as the
+ * EMULATION submenu's clamp_scroll. */
+static int clamp_settings_scroll(int selected, int scroll_top) {
+    int rows = SETTINGS_MENU_VIEW_ROWS;
+    if (rows > MENU_ITEM_COUNT) rows = MENU_ITEM_COUNT;
+    if (selected < scroll_top) scroll_top = selected;
+    if (selected >= scroll_top + rows) scroll_top = selected - rows + 1;
+    int last_top = MENU_ITEM_COUNT - rows;
+    if (scroll_top < 0) scroll_top = 0;
+    if (scroll_top > last_top) scroll_top = last_top;
+    return scroll_top;
 }
 
 /* ─── Menu palette setup ──────────────────────────────────────────── */
@@ -746,6 +799,12 @@ static void setup_menu_palette(void) {
     /* Dark gray for empty slots */
     uint16_t dg = ((0x20 & 0xF8) << 8) | ((0x20 & 0xFC) << 3) | (0x20 >> 3);
     pal[PAL_DARKGRAY] = dg | ((uint32_t)dg << 16);
+
+    /* Scrollbar track — mid-gray so the empty part of the bar is clearly
+     * visible on the dark background, without competing with the white
+     * thumb. About 3x the brightness of PAL_DARKGRAY. */
+    uint16_t st = ((0x60 & 0xF8) << 8) | ((0x60 & 0xFC) << 3) | (0x60 >> 3);
+    pal[PAL_SCROLLTRACK] = st | ((uint32_t)st << 16);
 
     /* NES base colors for thumbnails (indices PAL_THUMB_BASE..PAL_THUMB_BASE+63) */
     const qnes_rgb_t *ctab = qnes_get_color_table();
@@ -1533,7 +1592,7 @@ static void draw_emulation_menu(uint8_t *screen, int selected, int scroll_top) {
         const int bar_h = rows * LINE_HEIGHT;
 
         /* Track — darker than the thumb so it reads as background. */
-        fill_rect(screen, bar_x, bar_y, bar_w, bar_h, PAL_DARKGRAY);
+        fill_rect(screen, bar_x, bar_y, bar_w, bar_h, PAL_SCROLLTRACK);
 
         /* Thumb size proportional to how much of the list is visible,
          * clamped to at least 8 px so it stays grabbable. Thumb offset
@@ -1653,6 +1712,7 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
     setup_menu_palette();
 
     int selected = MENU_PLAYER1;
+    int scroll_top = 0;
 
     /* Auto-repeat state */
     uint32_t hold_counter = 0;
@@ -1665,7 +1725,7 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
         int btn = read_menu_buttons();
         if (btn == 0) break;
         audio_fill_silence(SAMPLE_RATE / 60);
-        draw_settings_menu(screen_buffer, selected);
+        draw_settings_menu(screen_buffer, selected, scroll_top);
         pending_pitch = SCREEN_WIDTH;
         video_post_frame(screen_buffer, SCREEN_WIDTH);
     }
@@ -1758,7 +1818,7 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
                 for (int i = 0; i < 60; i++) {
                     menu_wait_vsync();
                     audio_fill_silence(SAMPLE_RATE / 60);
-                    draw_settings_menu(screen_buffer, selected);
+                    draw_settings_menu(screen_buffer, selected, scroll_top);
                     pending_pitch = SCREEN_WIDTH;
                     video_post_frame(screen_buffer, SCREEN_WIDTH);
                     if (read_menu_buttons() == 0) break;
@@ -1781,8 +1841,13 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
         /* Tick status message countdown */
         if (status_frames > 0) status_frames--;
 
+        /* Keep the selection inside the scroll window (mirrors the
+         * EMULATION submenu). next_selectable() can skip over separators
+         * so the window adjusts after every navigation tick. */
+        scroll_top = clamp_settings_scroll(selected, scroll_top);
+
         /* Draw and display */
-        draw_settings_menu(screen_buffer, selected);
+        draw_settings_menu(screen_buffer, selected, scroll_top);
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_WIDTH;
         video_post_frame(screen_buffer, SCREEN_WIDTH);
@@ -1793,7 +1858,7 @@ settings_result_t settings_menu_show(uint8_t *screen_buffer) {
         menu_wait_vsync();
         int btn = read_menu_buttons();
         audio_fill_silence(SAMPLE_RATE / 60);
-        draw_settings_menu(screen_buffer, selected);
+        draw_settings_menu(screen_buffer, selected, scroll_top);
         pending_pitch = SCREEN_WIDTH;
         video_post_frame(screen_buffer, SCREEN_WIDTH);
         if (btn == 0) break;
