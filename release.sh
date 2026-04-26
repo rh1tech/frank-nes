@@ -10,7 +10,7 @@
 # Build matrix (9 variants):
 #   m2p2_frank-nes_*_hdmi_hstx, m2p2_*_hdmi_vga, m2p2_*_vga_hstx, m2p2_*_tv
 #   m1p2_frank-nes_*_hdmi_vga, m1p2_*_tv
-#   pcp2_frank-nes_*_hdmi_hstx
+#   pcp2_frank-nes_*_hdmi_vga
 #   dvp2_frank-nes_*_hdmi_vga
 #   z0p2_frank-nes_*_hdmi_vga
 #
@@ -35,7 +35,7 @@ BUILD_MATRIX=(
     "m2:m2p2_:tv:-DVIDEO_COMPOSITE=ON"
     "m1:m1p2_:hdmi_vga:"
     "m1:m1p2_:tv:-DVIDEO_COMPOSITE=ON"
-    "pc:pcp2_:hdmi_hstx:"
+    "pc:pcp2_:hdmi_vga:"
     "dv:dvp2_:hdmi_vga:"
     "z0:z0p2_:hdmi_vga:"
 )
