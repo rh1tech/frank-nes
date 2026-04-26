@@ -263,6 +263,15 @@ static void fb_text_center(int y, const char *s, uint8_t color) {
     fb_text(x, y, s, color);
 }
 
+/* Render text twice: a 1-pixel offset shadow in shadow_color, then the
+ * main glyph in fg_color. Keeps text legible over an animated background
+ * without blanket darkening. */
+static void fb_text_center_shadow(int y, const char *s, uint8_t fg_color, uint8_t shadow_color) {
+    int x = (SCREEN_W - (int)strlen(s) * 6) / 2;
+    fb_text(x + 1, y + 1, s, shadow_color);
+    fb_text(x,     y,     s, fg_color);
+}
+
 /* ─── CRC32 ───────────────────────────────────────────────────────── */
 
 static uint32_t crc32_table[256];
@@ -2179,6 +2188,129 @@ static const uint8_t logo_pal_map[9] = {
 
 /* ─── Welcome screen helpers ──────────────────────────────────────── */
 
+/* Tunnel background:
+ *   Classic raytraced demoscene tunnel. For each screen pixel we want
+ *   (angle, distance-from-centre) mapped to texture coords, then shifted by
+ *   time. Computing atan2/hypot per pixel is expensive on RP2350; instead we
+ *   sample a quarter (64x60) LUT and 4x4 block-copy into the framebuffer.
+ *
+ *   The 64x60 LUT covers the bottom-right quadrant of screen (pixel step of
+ *   4 in each axis). Each entry packs a repeated u-coord (upper byte) and
+ *   v-coord (lower byte) inside a 16-bit word, where u ~ angle/(2π)*256 and
+ *   v ~ 256*TEX_SCALE / distance. 4x4 nearest-neighbour is plenty for this
+ *   effect — the inherent swirl hides the step.
+ *
+ *   Colour ramp: reuse the 6x6x6 cube already in the palette, picking a
+ *   blue→magenta gradient driven by (u + v + time) and a concentric XOR ring
+ *   so it reads as demoscene neon rather than a flat warp. */
+#define TUN_LUT_W 64
+#define TUN_LUT_H 60
+#define TUN_BLOCK 4
+
+static uint16_t tunnel_lut[TUN_LUT_H][TUN_LUT_W];
+static bool tunnel_lut_ready = false;
+
+/* Integer atan2 returning 0..255 over a full turn. Good enough for the
+ * demoscene vibe — monotone per quadrant, no sqrt, no FP. */
+static int atan2_u8(int y, int x) {
+    int ay = y < 0 ? -y : y;
+    int ax = x < 0 ? -x : x;
+    int angle;
+    if (ax + ay == 0) return 0;
+    if (ax >= ay) {
+        /* 0..32 over [0, π/4] using ay/ax approximation */
+        angle = (ay * 32) / (ax ? ax : 1);
+    } else {
+        angle = 64 - (ax * 32) / (ay ? ay : 1);
+    }
+    if (x < 0) angle = 128 - angle;
+    if (y < 0) angle = 256 - angle;
+    return angle & 0xFF;
+}
+
+static void build_tunnel_lut(void) {
+    /* Centre of the screen */
+    const int cx = SCREEN_W / 2;
+    const int cy = SCREEN_H / 2;
+    for (int ly = 0; ly < TUN_LUT_H; ly++) {
+        for (int lx = 0; lx < TUN_LUT_W; lx++) {
+            int sx = lx * TUN_BLOCK + TUN_BLOCK / 2 - cx;
+            int sy = ly * TUN_BLOCK + TUN_BLOCK / 2 - cy;
+            /* Squared distance; clamp near centre to avoid divide-by-zero. */
+            int d2 = sx * sx + sy * sy;
+            if (d2 < 16) d2 = 16;
+            /* v = inverse distance scaled — larger value near centre so the
+             * tunnel appears to recede toward the middle. 4096*16/d2 maxes
+             * at ~4096 at the centre and falls off toward the edges. */
+            int v = (4096 * 16) / d2;
+            if (v > 255) v = 255;
+            int u = atan2_u8(sy, sx);
+            tunnel_lut[ly][lx] = (uint16_t)((u << 8) | (v & 0xFF));
+        }
+    }
+    tunnel_lut_ready = true;
+}
+
+/* Map 3-bit r/g/b (0..7) into the 6×6×6 cube palette (0..5 each channel). */
+static inline uint8_t cube_rgb(int r, int g, int b) {
+    r = (r * 5) / 7;
+    g = (g * 5) / 7;
+    b = (b * 5) / 7;
+    return (uint8_t)(PAL_CUBE_BASE + r * 36 + g * 6 + b);
+}
+
+static uint8_t tunnel_palette[256];
+
+/* Build the tunnel colour ramp once: index = (u + v + xor_ring) & 0xFF,
+ * ramp sweeps dark indigo → violet → magenta → pink and back. */
+static void build_tunnel_palette(void) {
+    for (int i = 0; i < 256; i++) {
+        /* Triangle wave in [0, 127] so the ramp wraps seamlessly. */
+        int t = i < 128 ? i : 255 - i;
+        /* Phase-shifted sinusoid-ish curves without calling sinf. */
+        int r = (t * 7) / 127;
+        int g = ((t < 48 ? 0 : (t - 48)) * 4) / 80;
+        int b = ((127 - t) * 7) / 127;
+        if (r > 7) r = 7;
+        if (g > 7) g = 7;
+        if (b > 7) b = 7;
+        tunnel_palette[i] = cube_rgb(r, g, b);
+    }
+}
+
+/* Render one frame of the tunnel into `fb`. 4x4 block fill per LUT entry,
+ * so the inner loop writes 16 bytes per sample → ~15k samples/frame. */
+static void draw_tunnel(uint32_t frame) {
+    if (!tunnel_lut_ready) {
+        build_tunnel_lut();
+        build_tunnel_palette();
+    }
+    /* Time offsets: u shifts slowly (spin), v shifts faster (rush forward). */
+    int u_shift = (int)(frame * 2);
+    int v_shift = (int)(frame * 3);
+    for (int ly = 0; ly < TUN_LUT_H; ly++) {
+        int y0 = ly * TUN_BLOCK;
+        for (int lx = 0; lx < TUN_LUT_W; lx++) {
+            uint16_t w = tunnel_lut[ly][lx];
+            int u = ((w >> 8) + u_shift) & 0xFF;
+            int v = ((w & 0xFF) + v_shift) & 0xFF;
+            /* XOR gives the concentric-ring moire a tunnel needs. */
+            int idx = (u ^ v) & 0xFF;
+            uint8_t c = tunnel_palette[idx];
+            /* 4x4 block write. Two 32-bit stores per row = 8 stores total. */
+            uint32_t c4 = c | (c << 8) | (c << 16) | (c << 24);
+            uint32_t *row = (uint32_t *)&fb[y0 * SCREEN_W + lx * TUN_BLOCK];
+            row[0] = c4;
+            row += SCREEN_W / 4;
+            row[0] = c4;
+            row += SCREEN_W / 4;
+            row[0] = c4;
+            row += SCREEN_W / 4;
+            row[0] = c4;
+        }
+    }
+}
+
 static void setup_welcome_palette(void) {
     setup_selector_palette();
     /* Add logo-specific entries to the palette buffer that was just written */
@@ -2289,7 +2421,10 @@ void welcome_screen_show(void) {
     while (1) {
         selector_wait_vsync();
 
-        fb_fill(PAL_BG);
+        /* Demoscene-style tunnel backdrop fills the frame first. The logo
+         * circle, controller, and text all draw on top so the tunnel never
+         * distracts from the UI. */
+        draw_tunnel(frame);
 
         /* Light gray circle behind the logo */
         int circle_cx = SCREEN_W / 2;
@@ -2303,18 +2438,20 @@ void welcome_screen_show(void) {
         draw_logo_shadow(circle_cx, circle_cy, 0, circle_r);
         draw_logo_3x(logo_x, logo_y);
 
-        /* Text */
-        fb_text_center(118, "FRANK NES", PAL_WHITE);
-        fb_text_center(132, version_str, PAL_GRAY);
+        /* Text — drop-shadowed so the animated tunnel doesn't reduce
+         * legibility. PAL_BLACK shadow sits under the glyph, PAL_WHITE/
+         * PAL_LOGO_LGRAY on top. */
+        fb_text_center_shadow(118, "FRANK NES", PAL_WHITE, PAL_BLACK);
+        fb_text_center_shadow(132, version_str, PAL_LOGO_LGRAY, PAL_BLACK);
 
-        fb_text_center(152, "BY MIKHAIL MATVEEV", PAL_GRAY);
-        fb_text_center(164, "GITHUB.COM/RH1TECH/FRANK-NES", PAL_GRAY);
+        fb_text_center_shadow(152, "BY MIKHAIL MATVEEV", PAL_LOGO_LGRAY, PAL_BLACK);
+        fb_text_center_shadow(164, "GITHUB.COM/RH1TECH/FRANK-NES", PAL_LOGO_LGRAY, PAL_BLACK);
 
-        fb_text_center(184, "RH1.TECH", PAL_GRAY);
+        fb_text_center_shadow(184, "RH1.TECH", PAL_LOGO_LGRAY, PAL_BLACK);
 
         /* Blinking "PRESS START" after 2 seconds (120 frames) */
         if (frame >= 120 && ((frame / 30) & 1) == 0) {
-            fb_text_center(218, "PRESS START", PAL_WHITE);
+            fb_text_center_shadow(218, "PRESS START", PAL_WHITE, PAL_BLACK);
         }
 
         /* Swap buffers and present */
