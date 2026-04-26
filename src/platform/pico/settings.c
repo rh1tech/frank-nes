@@ -1496,14 +1496,28 @@ static void draw_emulation_menu(uint8_t *screen, int selected, int scroll_top) {
         y += LINE_HEIGHT;
     }
 
-    /* Scroll indicators in the right margin (up arrow if more above,
-     * down arrow if more below). */
-    if (scroll_top > 0) {
-        draw_char(screen, SCREEN_WIDTH - MENU_X + 4, MENU_START_Y, '^', PAL_GRAY);
-    }
-    if (scroll_top + rows < EMU_MENU_ITEM_COUNT) {
-        draw_char(screen, SCREEN_WIDTH - MENU_X + 4,
-                  MENU_START_Y + (rows - 1) * LINE_HEIGHT, 'V', PAL_GRAY);
+    /* Scrollbar in the right margin: a dim track the full height of the
+     * viewport with a brighter thumb whose size reflects the viewport
+     * fraction and whose position reflects scroll_top / last_top. Only
+     * drawn when the list actually overflows. */
+    if (EMU_MENU_ITEM_COUNT > rows) {
+        const int bar_w = 3;
+        const int bar_x = SCREEN_WIDTH - MENU_X + 6;
+        const int bar_y = MENU_START_Y;
+        const int bar_h = rows * LINE_HEIGHT;
+
+        /* Track — darker than the thumb so it reads as background. */
+        fill_rect(screen, bar_x, bar_y, bar_w, bar_h, PAL_DARKGRAY);
+
+        /* Thumb size proportional to how much of the list is visible,
+         * clamped to at least 8 px so it stays grabbable. Thumb offset
+         * maps scroll_top across [0, last_top] onto [0, bar_h - thumb_h]. */
+        int thumb_h = (bar_h * rows) / EMU_MENU_ITEM_COUNT;
+        if (thumb_h < 8) thumb_h = 8;
+        if (thumb_h > bar_h) thumb_h = bar_h;
+        int thumb_range = bar_h - thumb_h;
+        int thumb_off = last_top > 0 ? (thumb_range * scroll_top) / last_top : 0;
+        fill_rect(screen, bar_x, bar_y + thumb_off, bar_w, thumb_h, PAL_WHITE);
     }
 
     /* Hint for MODE when the edit value differs from live — drawn outside
