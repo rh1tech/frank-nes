@@ -2202,7 +2202,7 @@ static inline uint8_t cube_rgb(int r, int g, int b) {
  *   the star, wrap around at screen edges, and paint the new pixel. Three
  *   brightness tiers (dim/mid/bright) give parallax depth without floats or
  *   trig. */
-#define STAR_COUNT 72
+#define STAR_COUNT 64
 
 typedef struct {
     /* Q8.8 fixed-point position so slow stars can move fractionally. */

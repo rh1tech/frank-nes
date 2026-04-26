@@ -46,11 +46,13 @@
 static uint32_t pwm_wrap = 4095;
 static uint32_t pwm_center = 2047;
 
-/* Ring buffer sized so a single chunk fits the largest per-frame sample
- * delivery (Dendy = 882 samples @ 44.1 kHz / 50 fps) with headroom.
- * Per-chunk size is runtime-configurable via pwm_audio_set_frame_rate so
- * consumer pacing matches the emulator (60 fps NTSC, 50 fps Dendy). */
-#define DMA_BUFFER_SAMPLES 960
+/* Ring buffer cap. 768 gives ~17 ms per chunk at 44.1 kHz — fits an NTSC
+ * frame (735 samples) directly. Dendy frames (882 samples) exceed the
+ * buffer and push_samples splits them across both ping-pong buffers, which
+ * the chain handles transparently. pwm_audio_set_frame_rate clamps the
+ * active chunk size to this cap. VGA_HSTX builds are tight on RAM; keep
+ * this sized conservatively. */
+#define DMA_BUFFER_SAMPLES 768
 #define DMA_BUFFER_COUNT   2
 #define PREROLL_BUFFERS    2
 
