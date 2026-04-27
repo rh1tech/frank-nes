@@ -17,9 +17,23 @@ if [ -n "$NES_ROM" ]; then
     CMAKE_OPTS="$CMAKE_OPTS -DNES_ROM_PATH=$NES_ROM_ABS"
 fi
 
-# Optional: CPU speed (252, 378, 504)
+# Optional: CPU speed in MHz (e.g. 252, 378, 504)
+# Usage: CPU_SPEED=252 ./build.sh
+# Default: 252 for HSTX/VGA paths, 378 for HDMI_PIO/composite TV
 if [ -n "$CPU_SPEED" ]; then
     CMAKE_OPTS="$CMAKE_OPTS -DCPU_SPEED=$CPU_SPEED"
+fi
+
+# Optional: PSRAM clock in MHz (e.g. 84, 100, 133)
+# Usage: PSRAM_SPEED=100 ./build.sh
+if [ -n "$PSRAM_SPEED" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DPSRAM_SPEED=$PSRAM_SPEED"
+fi
+
+# Optional: max QMI flash clock in MHz (e.g. 66, 88, 100, 133)
+# Usage: FLASH_SPEED=66 ./build.sh
+if [ -n "$FLASH_SPEED" ]; then
+    CMAKE_OPTS="$CMAKE_OPTS -DFLASH_SPEED=$FLASH_SPEED"
 fi
 
 # Optional: video mode (240p or 480p)
@@ -81,13 +95,16 @@ else
     CMAKE_OPTS="$CMAKE_OPTS -DUSB_HID_ENABLED=OFF"
 fi
 
-# Clean build dir if platform or video output mode changed (CMake caches these)
+# Clean build dir if platform, video output, or clock speeds changed (CMake caches these)
 if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
     CACHED_PLAT=$(grep -s 'PLATFORM:STRING=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
     CACHED_COMP=$(grep -s 'VIDEO_COMPOSITE:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
     CACHED_PIO=$(grep -s 'HDMI_PIO:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
     CACHED_VGAH=$(grep -s 'VGA_HSTX:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
     CACHED_VGAT=$(grep -s 'VGA_HSTX_TEST_PATTERN:BOOL=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
+    CACHED_CPU=$(grep -s 'CPU_SPEED:STRING=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
+    CACHED_PSRAM=$(grep -s 'PSRAM_SPEED:STRING=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
+    CACHED_FLASH=$(grep -s 'FLASH_SPEED:STRING=' "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)
     WANTED_COMP="OFF"
     WANTED_PIO="OFF"
     WANTED_VGAH="OFF"
@@ -100,7 +117,10 @@ if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
        [ "$CACHED_COMP" != "$WANTED_COMP" ] || \
        [ "$CACHED_PIO" != "$WANTED_PIO" ] || \
        [ "$CACHED_VGAH" != "$WANTED_VGAH" ] || \
-       [ "$CACHED_VGAT" != "$WANTED_VGAT" ]; then
+       [ "$CACHED_VGAT" != "$WANTED_VGAT" ] || \
+       { [ -n "$CPU_SPEED" ]   && [ "$CACHED_CPU"   != "$CPU_SPEED" ]; } || \
+       { [ -n "$PSRAM_SPEED" ] && [ "$CACHED_PSRAM" != "$PSRAM_SPEED" ]; } || \
+       { [ -n "$FLASH_SPEED" ] && [ "$CACHED_FLASH" != "$FLASH_SPEED" ]; }; then
         rm -rf "$BUILD_DIR"
     fi
 fi

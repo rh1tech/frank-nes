@@ -185,8 +185,38 @@ else()
 endif()
 
 # Peripheral drivers (always compiled)
-set(PSRAM_MAX_FREQ_MHZ 133 CACHE STRING "PSRAM clock frequency in MHz")
-add_compile_definitions(PSRAM_MAX_FREQ_MHZ=${PSRAM_MAX_FREQ_MHZ})
+
+# CPU overclock and PSRAM speed (command-line overridable)
+# Default CPU: 252 for HSTX/VGA paths, 378 for HDMI_PIO / composite TV.
+if(HDMI_PIO OR VIDEO_COMPOSITE)
+    set(CPU_SPEED_DEFAULT 378)
+else()
+    set(CPU_SPEED_DEFAULT 252)
+endif()
+set(CPU_SPEED "${CPU_SPEED_DEFAULT}" CACHE STRING "CPU clock in MHz (e.g. 252, 378, 504)")
+set(PSRAM_SPEED 133 CACHE STRING "PSRAM clock frequency in MHz (e.g. 84, 100, 133)")
+set(FLASH_SPEED 88 CACHE STRING "Max QMI flash frequency in MHz (e.g. 66, 88, 100, 133)")
+
+# Voltage selection by CPU speed (matches murmsnes convention)
+if(CPU_SPEED GREATER_EQUAL 504)
+    set(CPU_VOLTAGE "VREG_VOLTAGE_1_65")
+elseif(CPU_SPEED GREATER_EQUAL 378)
+    set(CPU_VOLTAGE "VREG_VOLTAGE_1_60")
+elseif(CPU_SPEED GREATER 252)
+    set(CPU_VOLTAGE "VREG_VOLTAGE_1_50")
+else()
+    set(CPU_VOLTAGE "VREG_VOLTAGE_DEFAULT")
+endif()
+
+message(STATUS "Clocks: CPU=${CPU_SPEED} MHz, PSRAM=${PSRAM_SPEED} MHz, FLASH=${FLASH_SPEED} MHz, VREG=${CPU_VOLTAGE}")
+
+# PSRAM_MAX_FREQ_MHZ is the legacy name still read by psram init code
+add_compile_definitions(
+    PSRAM_MAX_FREQ_MHZ=${PSRAM_SPEED}
+    CPU_CLOCK_MHZ=${CPU_SPEED}
+    CPU_VOLTAGE=${CPU_VOLTAGE}
+    FLASH_CLOCK_MHZ=${FLASH_SPEED}
+)
 
 add_subdirectory(${SRCDIR}/lib/fatfs fatfs)
 add_subdirectory(${DRIVERSDIR}/sdcard sdcard)

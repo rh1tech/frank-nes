@@ -1154,22 +1154,19 @@ static void real_main(void)
 #if defined(VGA_HSTX)
     /* Leave SDK boot-default clock (150 MHz). DispHSTX reconfigures as
      * needed. */
-#elif !defined(VIDEO_COMPOSITE) && !defined(HDMI_PIO)
-    /* HSTX: 252 MHz, HSTX clock = 252 / 2 = 126 MHz */
-    vreg_disable_voltage_limit();
-    vreg_set_voltage(VREG_VOLTAGE_1_60);
-    sleep_ms(10);
-    set_flash_timings(252, 88);
-    sleep_ms(10);
-    set_sys_clock_khz(252000, true);
 #else
-    /* PIO HDMI / composite TV: 378 MHz */
+    /* Configurable overclock — CPU_CLOCK_MHZ / CPU_VOLTAGE come from CMake
+     * (defaults: 252 MHz for HSTX, 378 MHz for HDMI_PIO/composite).
+     * Set flash divisor based on target clock; raise voltage only if the
+     * target exceeds the RP2350 default-safe 150 MHz. */
+#if CPU_CLOCK_MHZ > 150
     vreg_disable_voltage_limit();
-    vreg_set_voltage(VREG_VOLTAGE_1_60);
+    vreg_set_voltage(CPU_VOLTAGE);
     sleep_ms(10);
-    set_flash_timings(378, 88);
+    set_flash_timings(CPU_CLOCK_MHZ, FLASH_CLOCK_MHZ);
     sleep_ms(10);
-    set_sys_clock_khz(378000, true);
+#endif
+    set_sys_clock_khz(CPU_CLOCK_MHZ * 1000, true);
 #endif
 
     stdio_init_all();

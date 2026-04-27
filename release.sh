@@ -27,6 +27,13 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+# Release-wide clock defaults (override in-place for one-off rebuilds).
+# Applied to every variant, including HDMI_PIO / composite which previously
+# defaulted to 378 MHz — all release UF2s now ship at 252/100/66.
+RELEASE_CPU_SPEED="${RELEASE_CPU_SPEED:-252}"
+RELEASE_PSRAM_SPEED="${RELEASE_PSRAM_SPEED:-100}"
+RELEASE_FLASH_SPEED="${RELEASE_FLASH_SPEED:-66}"
+
 # Build matrix: "platform:prefix:video_suffix:cmake_video_flags"
 BUILD_MATRIX=(
     "m2:m2p2_:hdmi_hstx:"
@@ -133,10 +140,14 @@ for ENTRY in "${BUILD_MATRIX[@]}"; do
     mkdir build
     cd build
 
-    # Configure with CMake (USB HID enabled, logging disabled for release)
+    # Configure with CMake (USB HID enabled, logging disabled for release).
+    # Clock defaults: CPU=252, PSRAM=100, FLASH=66 — override via RELEASE_*_SPEED env.
     if cmake ../src/platform/pico \
         -DPLATFORM="$PLAT" \
         $CMAKE_VIDEO_FLAGS \
+        -DCPU_SPEED="$RELEASE_CPU_SPEED" \
+        -DPSRAM_SPEED="$RELEASE_PSRAM_SPEED" \
+        -DFLASH_SPEED="$RELEASE_FLASH_SPEED" \
         -DUSB_HID_ENABLED=ON \
         -DENABLE_LOGGING=0 > /dev/null 2>&1; then
 
