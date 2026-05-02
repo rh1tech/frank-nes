@@ -1007,7 +1007,7 @@ static int read_selector_buttons(void) {
         if (gp.buttons & 0x01) buttons |= BTN_A;
         if (gp.buttons & 0x02) buttons |= BTN_B;
         if (gp.buttons & 0x40) buttons |= BTN_START;
-        if (gp.buttons & 0x20) buttons |= BTN_SELECT;
+        if (gp.buttons & 0x80) buttons |= BTN_SELECT;
     }
 #endif
     return buttons;
@@ -1876,6 +1876,166 @@ static int search_dialog_show(void) {
     }
 }
 
+/* ─── USB gamepad menu-A/B calibration wizard ────────────────────── */
+
+#ifdef USB_HID_ENABLED
+#include "gamepad_cal.h"
+
+/* Swap the active/display buffers and post the current frame. Mirrors
+ * the pattern used by the main carousel loop. */
+static void wizard_present(void) {
+    uint8_t *tmp = fb;
+    fb = fb_show;
+    fb_show = tmp;
+    audio_fill_silence(SAMPLE_RATE / 60);
+    pending_pitch = SCREEN_W;
+    video_post_frame(fb_show, SCREEN_W);
+}
+
+/* Draw the wizard panel for one step. */
+static void wizard_draw(int slot_idx, uint16_t vid, uint16_t pid,
+                        const char *prompt, const char *sub) {
+    fb_fill(PAL_BG);
+
+    /* Framed panel centered in the screen. */
+    const int panel_w = 220;
+    const int panel_h = 140;
+    const int panel_x = (SCREEN_W - panel_w) / 2;
+    const int panel_y = (SCREEN_H - panel_h) / 2;
+    fb_rect(panel_x, panel_y, panel_w, panel_h, PAL_CART_LABEL);
+    fb_rect(panel_x + 1, panel_y + 1, panel_w - 2, panel_h - 2, PAL_BG);
+    fb_hline(panel_x + 4, panel_y + 22, panel_w - 8, PAL_GRAY);
+
+    fb_text_center(panel_y + 10, "NEW USB GAMEPAD", PAL_WHITE);
+
+    char idline[48];
+    snprintf(idline, sizeof(idline), "SLOT %d   VID %04X   PID %04X",
+             slot_idx + 1, vid, pid);
+    fb_text_center(panel_y + 32, idline, PAL_GRAY);
+
+    fb_text_center(panel_y + 62, prompt, PAL_WHITE);
+    if (sub)
+        fb_text_center(panel_y + 80, sub, PAL_CART_LIGHT);
+
+    fb_text_center(panel_y + panel_h - 14, "START: SKIP", PAL_GRAY);
+}
+
+/* Debounce: wait until the raw report matches baseline again
+ * (= user released the button). Returns after release or timeout. */
+static void wizard_wait_for_release(int slot_idx) {
+    uint32_t watchdog_ticks = 0;
+    for (; watchdog_ticks < 600; watchdog_ticks++) {  /* ~10s max */
+        usbhid_task();
+        uint8_t b = 0xFF, m = 0;
+        if (!usbhid_gamepad_find_pressed_bit(slot_idx, &b, &m)) {
+            /* No single-bit delta == baseline matches. Require a few
+             * quiet frames so a noisy axis doesn't trip the release. */
+            int quiet = 0;
+            for (; quiet < 4; quiet++) {
+                sleep_ms(16);
+                usbhid_task();
+                if (usbhid_gamepad_find_pressed_bit(slot_idx, &b, &m)) break;
+            }
+            if (quiet >= 4) return;
+        }
+        sleep_ms(16);
+    }
+}
+
+/* Run the wizard for one newly-connected USB gamepad slot. Blocks until
+ * complete or the user presses START to skip. */
+static void run_calibration_wizard(int slot_idx) {
+    usbhid_gamepad_raw_info_t info;
+    if (!usbhid_gamepad_get_raw_info(slot_idx, &info)) {
+        /* No raw report yet — pump USB until we have a baseline. */
+        for (int i = 0; i < 60; i++) {
+            usbhid_task();
+            sleep_ms(16);
+            if (usbhid_gamepad_get_raw_info(slot_idx, &info)) break;
+        }
+        if (info.report_len == 0) {
+            usbhid_gamepad_clear_calibration(slot_idx);
+            return;
+        }
+    }
+
+    const char *source_str = (info.source == USBHID_GP_SRC_XINPUT) ? "XINPUT" : "HID";
+
+    uint8_t a_byte = 0, a_mask = 0;
+    uint8_t b_byte = 0, b_mask = 0;
+    int step = 0;   /* 0 = A, 1 = B */
+    int skip = 0;
+
+    /* Give the pad a quiet moment to settle baseline before prompting. */
+    for (int i = 0; i < 30; i++) { usbhid_task(); sleep_ms(16); }
+
+    while (step < 2) {
+        const char *prompt = (step == 0) ? "PRESS THE A BUTTON" : "PRESS THE B BUTTON";
+        const char *sub    = (step == 0) ? "USED TO SELECT"     : "USED TO CANCEL";
+
+        wizard_draw(slot_idx, info.vid, info.pid, prompt, sub);
+        wizard_present();
+
+        usbhid_task();
+        ps2kbd_tick();
+        nespad_read();
+
+        /* Allow skipping with onboard NES pad, PS/2 Start, or USB Start
+         * from another pad — don't require the unknown pad for escape. */
+        uint16_t kbd = ps2kbd_get_state() | usbhid_get_kbd_state();
+        if ((kbd & KBD_STATE_START) ||
+            ((nespad_state | nespad_state2) & DPAD_START)) {
+            skip = 1;
+            break;
+        }
+
+        uint8_t bi = 0, mk = 0;
+        if (usbhid_gamepad_find_pressed_bit(slot_idx, &bi, &mk)) {
+            /* Reject same-bit re-detection across steps (user still
+             * holding A while we've moved to step B). */
+            if (step == 1 && bi == a_byte && mk == a_mask) {
+                /* Wait for release before re-prompting. */
+            } else {
+                if (step == 0) { a_byte = bi; a_mask = mk; }
+                else           { b_byte = bi; b_mask = mk; }
+                wizard_wait_for_release(slot_idx);
+                step++;
+            }
+        }
+
+        sleep_ms(16);
+    }
+
+    if (!skip) {
+        usbhid_gamepad_set_menu_ab(slot_idx, a_byte, a_mask, b_byte, b_mask);
+        usbhid_learned_ab_add(info.source, info.vid, info.pid,
+                              a_byte, a_mask, b_byte, b_mask);
+        gamepad_cal_save(source_str, info.vid, info.pid,
+                         a_byte, a_mask, b_byte, b_mask);
+
+        /* Confirmation flash. */
+        wizard_draw(slot_idx, info.vid, info.pid, "SAVED", NULL);
+        wizard_present();
+        sleep_ms(600);
+    }
+
+    usbhid_gamepad_clear_calibration(slot_idx);
+}
+
+/* Called once per frame from the selector loop. Scans both USB slots
+ * and runs the wizard on the first one that needs calibration. */
+static void check_and_run_calibration(void) {
+    for (int i = 0; i < 2; i++) {
+        if (usbhid_gamepad_needs_calibration(i)) {
+            run_calibration_wizard(i);
+            /* Only run one wizard per frame so the second pad's baseline
+             * has time to settle before we prompt. */
+            break;
+        }
+    }
+}
+#endif /* USB_HID_ENABLED */
+
 /* ─── Show: images loaded from SD on-the-fly ──────────────────────── */
 
 bool rom_selector_show(long *out_rom_size) {
@@ -1927,6 +2087,13 @@ bool rom_selector_show(long *out_rom_size) {
         prev_buttons = read_selector_buttons();
     }
 
+#ifdef USB_HID_ENABLED
+    /* First-time wizard: if a USB gamepad was plugged in at boot it may
+     * already be flagged needs_calibration. Run it before the carousel
+     * draws so the user's first interaction is with the real pad. */
+    check_and_run_calibration();
+#endif
+
     while (1) {
         selector_wait_vsync();
 
@@ -1940,6 +2107,12 @@ bool rom_selector_show(long *out_rom_size) {
         audio_fill_silence(SAMPLE_RATE / 60);
         pending_pitch = SCREEN_W;
         video_post_frame(fb_show, SCREEN_W);
+
+#ifdef USB_HID_ENABLED
+        /* Hot-plug support: a pad connected mid-session also needs the
+         * wizard. Cheap because the slot's flag is 0 for known profiles. */
+        check_and_run_calibration();
+#endif
 
         frame_count++;
 

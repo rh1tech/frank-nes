@@ -56,6 +56,7 @@
 
 #if USB_HID_ENABLED
 #include "usbhid.h"
+#include "gamepad_cal.h"
 #endif
 
 /* 16KB stack in main SRAM — scratch_y (4KB) is too small for QuickNES */
@@ -1338,6 +1339,15 @@ static void real_main(void)
         if (!sd_ok) {
             sd_error_show();
         }
+#if USB_HID_ENABLED
+        /* Load SD-persisted USB gamepad calibration profiles (if any).
+         * Missing /nes/gamepads directory is fine — no-op. Must run after
+         * SD is mounted and before the first USB pad mount callback fires
+         * so learned A/B profiles are visible when slots are seeded. */
+        if (sd_ok) {
+            gamepad_cal_load_all();
+        }
+#endif
     }
 
     /* If the SD is present but the ROM library is empty (missing /nes or
@@ -1539,17 +1549,20 @@ static void real_main(void)
                 usbhid_gamepad_state_t gp;
                 usbhid_get_gamepad_state_idx(ui, &gp);
 
+                /* Canonical usbhid gamepad bits (see usbhid.h):
+                 *   0x01=A 0x02=B 0x04=X 0x08=Y 0x10=L 0x20=R 0x40=Start 0x80=Select
+                 * NES only has A/B, so X→A and Y→B act as doubled face buttons. */
                 int uj = 0;
                 if (gp.dpad & 0x01) uj |= 0x10; // Up
                 if (gp.dpad & 0x02) uj |= 0x20; // Down
                 if (gp.dpad & 0x04) uj |= 0x40; // Left
                 if (gp.dpad & 0x08) uj |= 0x80; // Right
-                if (gp.buttons & 0x01) uj |= 0x01; // A -> NES A
-                if (gp.buttons & 0x02) uj |= 0x02; // B -> NES B
-                if (gp.buttons & 0x04) uj |= 0x01; // C -> NES A
-                if (gp.buttons & 0x08) uj |= 0x02; // X -> NES B
+                if (gp.buttons & 0x01) uj |= 0x01; // A     -> NES A
+                if (gp.buttons & 0x02) uj |= 0x02; // B     -> NES B
+                if (gp.buttons & 0x04) uj |= 0x01; // X     -> NES A (doubled)
+                if (gp.buttons & 0x08) uj |= 0x02; // Y     -> NES B (doubled)
                 if (gp.buttons & 0x40) uj |= 0x08; // Start -> NES Start
-                if (gp.buttons & 0x80) uj |= 0x04; // Select -> NES Select
+                if (gp.buttons & 0x80) uj |= 0x04; // Select-> NES Select
 
                 if (ui == 0) usb1_joy = uj; else usb2_joy = uj;
             }
